@@ -1,0 +1,2633 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OD Tracker — bacterial culture growth</title>
+<script>
+// Set before first paint so touch sizing never flashes in.
+// ?touch=1 forces it on, ?touch=0 off — some Pi panels report a fine pointer.
+(function () {
+  var f = new URLSearchParams(location.search).get("touch");
+  var on = f === "1" ? true : f === "0" ? false : matchMedia("(pointer: coarse)").matches;
+  if (on) document.documentElement.classList.add("touch");
+})();
+</script>
+<style>
+:root {
+  color-scheme: light;
+  --page:           #f9f9f7;
+  --surface:        #fcfcfb;
+  --surface-sunk:   #f2f1ed;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #898781;
+  --grid:           #e1e0d9;
+  --axis:           #c3c2b7;
+  --border:         rgba(11,11,11,0.10);
+  --series-1:       #2a78d6;
+  --good:           #0ca30c;
+  --warning:        #fab219;
+  --serious:        #ec835a;
+  --critical:       #d03b3b;
+  /* categorical series, fixed order — a culture keeps its slot for life so a
+     hidden or deleted culture never repaints the others */
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
+  --shadow:         0 1px 2px rgba(11,11,11,.05), 0 8px 24px rgba(11,11,11,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface:        #1a1a19;
+    --surface-sunk:   #131312;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --axis:           #383835;
+    --border:         rgba(255,255,255,0.10);
+    --series-1:       #3987e5;
+    --shadow:         0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:           #0d0d0d;
+  --surface:        #1a1a19;
+  --surface-sunk:   #131312;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #898781;
+  --grid:           #2c2c2a;
+  --axis:           #383835;
+  --border:         rgba(255,255,255,0.10);
+  --series-1:       #3987e5;
+  --shadow:         0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+}
+
+* { box-sizing: border-box; }
+/* a class-level `display` beats the UA rule for [hidden], so state it here */
+[hidden] { display: none !important; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--page);
+  color: var(--text-primary);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- header ---------- */
+header {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 14px 20px;
+  background: color-mix(in srgb, var(--page) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -.01em;
+     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42vw; }
+h1.clickable { cursor: pointer; border-radius: 7px; padding: 2px 6px; margin-left: -6px; }
+h1.clickable:hover { background: var(--surface-sunk); }
+h1 span { color: var(--text-muted); font-weight: 400; }
+.spacer { flex: 1 1 auto; }
+
+button, .btn {
+  font: inherit; font-size: 13.5px; font-weight: 550;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, opacity .12s;
+  white-space: nowrap;
+}
+button:hover { background: var(--surface-sunk); }
+button:active { transform: translateY(.5px); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+button.primary {
+  background: var(--series-1); border-color: transparent; color: #fff;
+}
+button.primary:hover { background: color-mix(in srgb, var(--series-1) 85%, #000); }
+button.ghost { background: transparent; border-color: transparent; color: var(--text-secondary); }
+button.ghost:hover { background: var(--surface-sunk); color: var(--text-primary); }
+button.icon { padding: 6px 9px; line-height: 1; }
+:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+
+/* ---------- layout ---------- */
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 520px) { .grid { grid-template-columns: 1fr; } main { padding: 14px; } }
+
+.empty {
+  text-align: center; padding: 80px 20px; color: var(--text-secondary);
+}
+.empty h2 { font-size: 18px; font-weight: 600; margin: 0 0 6px; color: var(--text-primary); }
+.empty p { margin: 0 0 20px; font-size: 14px; }
+
+/* ---------- card ---------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.card-head { padding: 14px 16px 12px; }
+.name-row { display: flex; align-items: center; gap: 8px; }
+input.name {
+  flex: 1 1 auto; min-width: 0;
+  font: inherit; font-size: 16px; font-weight: 650; letter-spacing: -.01em;
+  color: var(--text-primary);
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  padding: 3px 6px; margin-left: -6px;
+}
+input.name:hover { border-color: var(--border); }
+input.name:focus { border-color: var(--series-1); outline: none; background: var(--page); }
+
+.clock-row {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  margin-top: 10px;
+}
+.clock {
+  font-size: 34px; font-weight: 600; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+}
+.clock .frac { font-size: 20px; color: var(--text-muted); font-weight: 500; }
+.state {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.state.running .dot { background: var(--good); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+.controls { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+/* ---------- replicate group chip ---------- */
+.grp-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+  font-size: 12px; font-weight: 550; line-height: 1.2;
+  color: var(--text-secondary); background: var(--surface-sunk);
+  border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px;
+}
+.chip:hover { background: var(--surface); border-color: var(--text-muted); }
+.chip .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* this culture's number within its group, e.g. #2 */
+.rep-no {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
+  color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 4px; flex: none; font-variant-numeric: tabular-nums;
+}
+.chip.none { border-style: dashed; background: transparent; color: var(--text-muted); }
+/* a span, not a button — a button inside a button is invalid, and the chip
+   itself is the button (same trick as the project card's delete) */
+.chip-x {
+  margin: -4px -6px -4px 0; padding: 4px 6px; border-radius: 999px;
+  color: var(--text-muted); font-size: 12px; line-height: 1; flex: none;
+}
+.chip-x:hover { color: var(--critical); background: var(--surface-sunk); }
+/* finger-sized on a touch panel: the ✕ fills the chip's height and widens,
+   rather than sitting as a 28px target inside it */
+html.touch .chip { font-size: 13px; padding: 6px 12px; min-height: 38px; }
+html.touch .chip-x { margin: -9px -12px -9px 0; padding: 9px 13px; font-size: 15px; }
+
+/* ---------- stats ---------- */
+.stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 1px; background: var(--border);
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.stat { background: var(--surface); padding: 10px 14px; }
+.stat .label {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+}
+/* uppercase would render μ as M */
+.stat .label .sym { text-transform: none; }
+.stat .value {
+  font-size: 19px; font-weight: 600; margin-top: 2px; letter-spacing: -.01em;
+  color: var(--text-primary);
+}
+.stat .value.pending { font-size: 14px; font-weight: 500; color: var(--text-muted); }
+.stat .sub { font-size: 11.5px; color: var(--text-secondary); margin-top: 1px; }
+/* the volume tile is a button — tapping it sets the volumes */
+button.stat {
+  font: inherit; text-align: left; white-space: normal;
+  border: none; border-radius: 0; width: 100%; min-height: 0;
+  padding: 10px 14px;
+}
+.stat .value.low { color: var(--serious); }
+.stat .value.out { color: var(--critical); }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 600; margin-top: 3px; color: var(--text-secondary);
+}
+.badge .mark { font-size: 11px; line-height: 1; }
+.badge.good .mark    { color: var(--good); }
+.badge.warning .mark { color: var(--warning); }
+.badge.serious .mark { color: var(--serious); }
+
+/* ---------- tabs ---------- */
+.tabs { display: flex; gap: 2px; padding: 8px 10px 0; border-bottom: 1px solid var(--border); }
+.tab {
+  border: none; background: transparent; border-radius: 7px 7px 0 0;
+  padding: 7px 12px; font-size: 13.5px; font-weight: 550;
+  color: var(--text-secondary); position: relative;
+}
+.tab:hover { background: var(--surface-sunk); color: var(--text-primary); }
+.tab[aria-selected="true"] { color: var(--text-primary); }
+.tab[aria-selected="true"]::after {
+  content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px;
+  height: 2px; background: var(--series-1); border-radius: 2px 2px 0 0;
+}
+.tab .count {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  background: var(--surface-sunk); border-radius: 20px; padding: 1px 6px; margin-left: 5px;
+}
+.panel { padding: 14px 16px 16px; }
+
+/* ---------- table ---------- */
+.table-wrap { overflow-x: auto; margin: 0 -4px; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th {
+  text-align: right; font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em;
+  padding: 0 8px 7px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+th:first-child, td:first-child { text-align: left; padding-left: 4px; }
+th.c, td.c { text-align: center; }
+td {
+  text-align: right; padding: 7px 8px;
+  border-bottom: 1px solid var(--grid);
+  font-variant-numeric: tabular-nums;
+}
+tr:last-child td { border-bottom: none; }
+tr.excluded td { color: var(--text-muted); }
+tr.excluded td.od { text-decoration: line-through; text-decoration-thickness: 1px; }
+td.act { width: 1%; padding-right: 4px; }
+/* a per-reading note rides under its row rather than taking a column, which
+   would squeeze the numbers in a card this narrow */
+tr.has-note td { border-bottom: none; }
+tr.note-row td { padding: 0 4px 9px; border-bottom: 1px solid var(--grid); text-align: left; }
+tr:last-child td, tr.note-row:last-child td { border-bottom: none; }
+.note-text {
+  border: none; background: transparent; font: inherit; text-align: left;
+  font-size: 12.5px; line-height: 1.45; color: var(--text-secondary);
+  padding: 3px 7px; margin-left: 18px; border-radius: 7px;
+  border-left: 2px solid var(--border); width: calc(100% - 22px);
+}
+.note-text:hover { background: var(--surface-sunk); color: var(--text-primary); }
+tr.note-row.excluded .note-text { color: var(--text-muted); }
+html.touch .note-text { font-size: 14px; padding: 8px 10px; }
+
+/* the OD value is a button — click it to correct a mistyped reading */
+.cell-edit {
+  border: none; background: transparent; color: inherit;
+  font: inherit; font-variant-numeric: tabular-nums;
+  padding: 2px 5px; margin: -2px -5px; border-radius: 6px;
+  text-decoration: underline; text-decoration-style: dotted;
+  text-underline-offset: 3px; text-decoration-color: var(--text-muted);
+}
+.cell-edit:hover { background: var(--surface-sunk); text-decoration-color: var(--series-1); }
+tr.excluded .cell-edit { text-decoration-line: line-through underline; }
+html.touch .cell-edit { padding: 8px 10px; margin: -8px -10px; }
+
+.row-btn {
+  border: none; background: transparent; color: var(--text-muted);
+  padding: 2px 6px; border-radius: 6px; font-size: 14px; line-height: 1;
+}
+.row-btn:hover { background: var(--surface-sunk); color: var(--critical); }
+input[type="checkbox"] { accent-color: var(--series-1); width: 15px; height: 15px; cursor: pointer; }
+.hint { font-size: 12.5px; color: var(--text-muted); margin: 12px 0 0; }
+.no-data { text-align: center; color: var(--text-muted); font-size: 13.5px; padding: 26px 10px; }
+.table-foot { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+
+/* ---------- notes ---------- */
+textarea.notes {
+  width: 100%; min-height: 190px; resize: vertical;
+  font: inherit; font-size: 14px; line-height: 1.6;
+  color: var(--text-primary); background: var(--page);
+  border: 1px solid var(--border); border-radius: 9px; padding: 11px 12px;
+}
+textarea.notes:focus { outline: none; border-color: var(--series-1); }
+textarea.notes::placeholder { color: var(--text-muted); }
+
+/* ---------- chart ---------- */
+.chart-wrap { position: relative; }
+svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
+.gridline { stroke: var(--grid); stroke-width: 1; }
+.axisline { stroke: var(--axis); stroke-width: 1; }
+.tick-label { fill: var(--text-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.axis-title { fill: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.dataline { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.fitline { fill: none; stroke: var(--text-muted); stroke-width: 2; stroke-dasharray: 5 4; stroke-linecap: round; }
+.pt { fill: var(--series-1); stroke: var(--surface); stroke-width: 2; }
+.pt.off { fill: var(--text-muted); }
+.crosshair { stroke: var(--axis); stroke-width: 1; }
+.tooltip {
+  position: absolute; pointer-events: none; z-index: 5;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: var(--shadow);
+  padding: 7px 10px; font-size: 12.5px; white-space: nowrap;
+  transform: translate(-50%, -100%); opacity: 0; transition: opacity .1s;
+}
+.tooltip .tt-od { font-weight: 650; font-variant-numeric: tabular-nums; }
+.tooltip .tt-t { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+/* ---------- dialog ---------- */
+dialog {
+  border: 1px solid var(--border); border-radius: 14px; padding: 0;
+  background: var(--surface); color: var(--text-primary);
+  box-shadow: 0 20px 60px rgba(0,0,0,.28);
+  width: min(400px, calc(100vw - 32px));
+}
+dialog::backdrop { background: rgba(0,0,0,.4); backdrop-filter: blur(2px); }
+.dlg-body { padding: 20px; }
+.dlg-title { font-size: 16px; font-weight: 650; margin: 0 0 3px; }
+.dlg-sub { font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; }
+.field { margin-bottom: 13px; }
+.field label {
+  display: block; font-size: 11.5px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px;
+}
+.field input[type="text"], .field input[type="number"] {
+  width: 100%; font: inherit; font-size: 15px;
+  color: var(--text-primary); background: var(--page);
+  border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+  font-variant-numeric: tabular-nums;
+}
+.field input:focus { outline: none; border-color: var(--series-1); }
+.field .help { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+.dlg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.err { color: var(--critical); font-size: 12.5px; margin-top: 8px; min-height: 0; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* with cuvette mode off there is no second field to pair with */
+.two-col.solo { grid-template-columns: 1fr; }
+
+/* A number with -/+ buttons. The volume dialog carries no number pad, so on a
+   keyboard-less touch panel these buttons are the only way to set a volume. */
+.stepper { display: flex; gap: 8px; align-items: stretch; }
+.stepper input { flex: 1 1 auto; min-width: 0; text-align: center; }
+.stepper button { flex: none; min-width: 46px; font-size: 17px; font-weight: 600; padding: 0 12px; }
+.check-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 14px; font-size: 14px; }
+.check-row input { width: 18px; height: 18px; flex: none; margin-top: 1px; }
+.check-row .sub { display: block; font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+
+/* ============================================================
+   Touch screens (Raspberry Pi Touch Display and similar).
+   Gated on html.touch, which is set at load from the pointer type
+   and can be forced with ?touch=1 / ?touch=0 — some Pi panels report
+   a fine pointer, and attaching a mouse flips it too. A desktop
+   without the class renders exactly as it did before.
+   ============================================================ */
+html.touch * { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+/* chrome isn't selectable — long-press shouldn't pop a selection handle */
+html.touch h1, html.touch .label, html.touch .state, html.touch .tab,
+html.touch th, html.touch .hint, html.touch .clock { user-select: none; }
+
+html.touch button, html.touch .btn {
+  min-height: 46px; padding: 11px 18px; font-size: 15px; border-radius: 10px;
+}
+html.touch button.icon { min-width: 46px; padding: 11px 13px; }
+
+html.touch .controls { gap: 10px; }
+html.touch .controls button { flex: 1 1 auto; }   /* Start / Reset / Record fill the row */
+
+html.touch input.name { font-size: 18px; padding: 8px 8px; }
+html.touch .clock { font-size: 40px; }
+
+html.touch .tabs { padding: 8px 10px 0; }
+html.touch .tab { min-height: 46px; padding: 12px 16px; font-size: 15px; }
+
+/* table: taller rows, and finger-sized controls */
+html.touch table { font-size: 15px; }
+html.touch th { font-size: 12px; padding-bottom: 10px; }
+html.touch td { padding: 13px 10px; }
+html.touch input[type="checkbox"] { width: 26px; height: 26px; }
+html.touch .row-btn { min-width: 44px; min-height: 44px; font-size: 20px; border-radius: 10px; }
+
+html.touch .field input[type="text"], html.touch .field input[type="number"] {
+  font-size: 18px; padding: 13px 14px;      /* ≥16px stops zoom-on-focus */
+}
+html.touch textarea.notes { font-size: 16px; min-height: 150px; }
+html.touch dialog { width: min(460px, calc(100vw - 24px)); }
+
+/* short landscape panels (the 800×480 Pi Touch Display) — reclaim vertical space */
+@media (max-height: 560px) {
+  html.touch header { padding: 8px 14px; }
+  html.touch .clock { font-size: 32px; }
+  html.touch .card-head { padding: 10px 14px 10px; }
+  html.touch .stat { padding: 8px 12px; }
+  html.touch .panel { padding: 10px 14px 14px; }
+  html.touch .dlg-body { padding: 14px 16px; }
+  html.touch .field { margin-bottom: 9px; }
+  html.touch .kp-grid button { min-height: 44px; font-size: 18px; }
+}
+
+/* ---------- project cards ---------- */
+.proj {
+  position: relative; display: block; width: 100%; text-align: left;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: var(--shadow);
+  padding: 16px 18px 14px; font: inherit; color: inherit;
+  transition: transform .12s, box-shadow .12s, border-color .12s;
+}
+.proj:hover {
+  background: var(--surface); border-color: color-mix(in srgb, var(--series-1) 40%, var(--border));
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(11,11,11,.06), 0 12px 28px rgba(11,11,11,.09);
+}
+.proj-name {
+  font-size: 17px; font-weight: 650; letter-spacing: -.01em;
+  color: var(--text-primary); margin: 0 34px 3px 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.proj-meta { font-size: 13px; color: var(--text-secondary); }
+.proj-date { font-size: 12px; color: var(--text-muted); margin-top: 9px; }
+.proj-live {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  margin-top: 9px;
+}
+.proj-del {
+  position: absolute; top: 12px; right: 12px;
+  border: none; background: transparent; color: var(--text-muted);
+  border-radius: 8px; padding: 5px 8px; line-height: 1; font-size: 14px;
+  opacity: 0; transition: opacity .12s;
+}
+.proj:hover .proj-del, .proj-del:focus-visible { opacity: 1; }
+.proj-del:hover { background: var(--surface-sunk); color: var(--critical); }
+html.touch .proj-del { opacity: 1; }
+
+/* ---------- view switcher ---------- */
+.viewsw { display: flex; gap: 2px; background: var(--surface-sunk); border-radius: 9px; padding: 2px; }
+.viewsw button {
+  border: none; background: transparent; border-radius: 7px;
+  padding: 5px 13px; font-size: 13.5px; font-weight: 550; color: var(--text-secondary);
+}
+.viewsw button:hover { color: var(--text-primary); background: transparent; }
+.viewsw button[aria-selected="true"] {
+  background: var(--surface); color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(0,0,0,.06);
+}
+
+/* ---------- compare view ---------- */
+.cmp-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: var(--shadow); padding: 16px 18px 18px;
+}
+.cmp-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.cmp-head > div { flex: 1 1 auto; }
+.cmp-title { font-size: 16px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
+.cmp-sub { font-size: 13px; color: var(--text-secondary); margin: 2px 0 0; }
+
+/* Legend is mandatory here, not decoration: three light-mode series sit below
+   3:1 on the surface, so identity must never rest on colour alone. It doubles
+   as the table view (mu and doubling time per culture). */
+.legend {
+  display: grid; gap: 14px; margin-top: 14px;
+  border-top: 1px solid var(--border); padding-top: 12px;
+}
+.lg-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 2px 14px;
+}
+.lg-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 6px; font-size: 11.5px; font-weight: 650;
+  color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em;
+}
+.lg-head .agg {
+  text-transform: none; letter-spacing: 0; font-weight: 550;
+  color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
+.lg-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; border-radius: 7px;
+  padding: 5px 6px; text-align: left; font: inherit;
+}
+.lg-item:hover { background: var(--surface-sunk); }
+.lg-key { flex: none; overflow: visible; }
+.lg-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.lg-name {
+  font-size: 13.5px; font-weight: 550; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* must never be squeezed out by a long stat — the name IS the identity channel */
+  flex: 1 1 auto; min-width: 5.5em;
+}
+.lg-stat {
+  font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums;
+  white-space: nowrap; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis;
+}
+.lg-item.off .lg-name, .lg-item.off .lg-stat { color: var(--text-muted); }
+.lg-item.off .lg-key { opacity: .35; }
+.series-label { font-size: 11.5px; font-weight: 600; }
+
+/* ---------- on-screen number pad ---------- */
+#keypad { display: none; }
+html.touch #keypad { display: block; margin: 4px 0 2px; }
+.kp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.kp-grid button {
+  min-height: 52px; font-size: 20px; font-weight: 600;
+  border-radius: 10px; padding: 0;
+}
+.kp-grid button.wide { grid-column: span 2; }
+.kp-target {
+  font-size: 11.5px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em; margin: 0 0 7px;
+}
+
+/* ---------- replicate group picker ---------- */
+.grp-list { display: grid; gap: 6px; margin-bottom: 14px; max-height: 34vh; overflow-y: auto; }
+.grp-opt { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 9px 11px; }
+.grp-opt[aria-pressed="true"] { border-color: var(--series-1); box-shadow: inset 0 0 0 1px var(--series-1); }
+.grp-opt .grp-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grp-opt .n { margin-left: auto; color: var(--text-muted); font-weight: 500; flex: none; }
+.grp-del {
+  display: flex; align-items: center; align-self: stretch;   /* full row height to tap */
+  margin: -9px -11px -9px 0; padding: 0 11px; border-radius: 8px;
+  color: var(--text-muted); font-size: 14px; line-height: 1; flex: none;
+}
+html.touch .grp-del { padding: 0 15px; font-size: 16px; }
+.grp-del:hover { color: var(--critical); background: var(--surface-sunk); }
+
+/* A dialog must never grow past the screen — on an 800x480 panel the actions
+   would otherwise sit below the fold, unreachable. */
+dialog { max-height: calc(100dvh - 16px); }
+.dlg-body { max-height: inherit; overflow-y: auto; overscroll-behavior: contain; }
+
+/* Short landscape panel with room to spare horizontally: fields beside the
+   keypad, so the whole dialog fits without scrolling. */
+@media (max-height: 620px) and (min-width: 700px) {
+  html.touch dialog { width: min(740px, calc(100vw - 24px)); }
+  html.touch .rec-cols {
+    display: grid; grid-template-columns: 1fr 280px; gap: 16px; align-items: start;
+  }
+  html.touch #keypad { margin: 0; }
+  html.touch .kp-grid button { min-height: 40px; font-size: 17px; }
+  html.touch .dlg-title { margin-bottom: 1px; }
+  html.touch .dlg-sub { margin-bottom: 10px; }
+  html.touch .dlg-actions { margin-top: 12px; }
+  /* the last few pixels that keep Record above the fold: standing guidance goes,
+     the live volume readout beside it stays */
+  html.touch #dilHelp { display: none; }
+
+  /* the group picker gets the same treatment: list beside the name and kind,
+     so Save stays on screen without scrolling */
+  html.touch .grp-cols {
+    display: grid; grid-template-columns: 1fr 280px; gap: 16px; align-items: start;
+  }
+  html.touch #grpList { max-height: 50vh; margin-bottom: 0; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <button id="backBtn" class="icon ghost" title="All projects" aria-label="Back to all projects" hidden>←</button>
+  <h1 id="appTitle">OD Tracker <span>· bacterial cultures</span></h1>
+  <div class="viewsw" role="tablist" aria-label="View" id="viewsw" hidden>
+    <button role="tab" data-view="cards" aria-selected="true">Cultures</button>
+    <button role="tab" data-view="compare" aria-selected="false">Compare</button>
+  </div>
+  <div class="spacer"></div>
+  <button id="startAll" class="ghost" hidden>Start all</button>
+  <button id="pauseAll" class="ghost" hidden>Pause all</button>
+  <button id="exportAll" class="ghost" hidden>Export CSV</button>
+  <button id="themeBtn" class="icon ghost" title="Toggle light / dark" aria-label="Toggle light / dark">◐</button>
+  <button id="addProjBtn" class="primary">+ New project</button>
+  <button id="addBtn" class="primary" hidden>+ New culture</button>
+</header>
+
+<main>
+  <div id="projects" class="grid" hidden></div>
+  <div id="projEmpty" class="empty" hidden>
+    <h2>No projects yet</h2>
+    <p>A project holds a set of cultures — one experiment, one project.</p>
+    <button class="primary" onclick="document.getElementById('addProjBtn').click()">+ New project</button>
+  </div>
+
+  <div id="grid" class="grid"></div>
+
+  <section id="compare" hidden>
+    <div class="cmp-card">
+      <div class="cmp-head">
+        <div>
+          <h2 class="cmp-title">All cultures</h2>
+          <p class="cmp-sub" id="cmpSub"></p>
+        </div>
+        <button id="cmpExport" class="ghost">Export CSV</button>
+      </div>
+      <div class="chart-wrap">
+        <svg class="chart" id="cmpChart" role="img"
+             aria-label="Growth curves for all cultures: OD 600 against elapsed hours, log scale"></svg>
+        <div class="tooltip" id="cmpTip"></div>
+      </div>
+      <div id="cmpLegend" class="legend"></div>
+      <p class="hint" id="cmpHint"></p>
+    </div>
+  </section>
+
+  <div id="empty" class="empty" hidden>
+    <h2>No cultures yet</h2>
+    <p>Add a culture, then press <strong>Start</strong> to run its stopwatch and log OD<sub>600</sub> readings.</p>
+    <button class="primary" onclick="document.getElementById('addBtn').click()">+ New culture</button>
+  </div>
+</main>
+
+<!-- record OD -->
+<dialog id="recordDlg">
+  <form method="dialog" class="dlg-body" id="recordForm">
+    <p class="dlg-title" id="recordTitle">Record OD<sub>600</sub></p>
+    <p class="dlg-sub" id="recordSub"></p>
+    <div class="rec-cols">
+     <div class="rec-fields">
+      <div class="field">
+        <label for="odInput">Reading (OD<sub>600</sub>)</label>
+        <input type="number" id="odInput" step="any" min="0" inputmode="decimal" autocomplete="off" placeholder="0.412" required>
+      </div>
+      <div class="two-col" id="recPair">
+        <div class="field">
+          <label for="dilInput">Dilution <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
+          <input type="number" id="dilInput" step="any" min="1" inputmode="decimal" placeholder="1" autocomplete="off">
+          <div class="help" id="dilHelp">10 for a 1:10 dilution — OD = reading × factor.</div>
+        </div>
+        <div class="field" id="volField">
+          <label for="volInput">Volume removed (mL)</label>
+          <input type="number" id="volInput" step="any" min="0" inputmode="decimal" placeholder="0.2" autocomplete="off">
+          <div class="help" id="volAfter"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="noteInput">Note <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
+        <input type="text" id="noteInput" autocomplete="off" maxlength="200"
+               placeholder="e.g. post-IPTG, bubbles in cuvette, resuspended">
+      </div>
+     </div>
+    <div id="keypad">
+      <p class="kp-target">Typing into: <span id="kpTarget">reading</span></p>
+      <div class="kp-grid">
+        <button type="button" data-k="7">7</button>
+        <button type="button" data-k="8">8</button>
+        <button type="button" data-k="9">9</button>
+        <button type="button" data-k="4">4</button>
+        <button type="button" data-k="5">5</button>
+        <button type="button" data-k="6">6</button>
+        <button type="button" data-k="1">1</button>
+        <button type="button" data-k="2">2</button>
+        <button type="button" data-k="3">3</button>
+        <button type="button" data-k="0" class="wide">0</button>
+        <button type="button" data-k=".">.</button>
+        <button type="button" data-k="back" class="wide">⌫ Back</button>
+        <button type="button" data-k="clear">Clear</button>
+      </div>
+    </div>
+    </div>
+
+    <div class="err" id="recordErr"></div>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="recordCancel">Cancel</button>
+      <button type="submit" class="primary" id="recordOk">Record</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- replicate group -->
+<dialog id="grpDlg">
+  <form method="dialog" class="dlg-body" id="grpForm">
+    <p class="dlg-title" id="grpTitle">Replicate group</p>
+    <p class="dlg-sub" id="grpSub"></p>
+
+    <div class="grp-cols">
+    <div class="grp-list" id="grpList"></div>
+
+    <div id="grpEdit">
+      <div class="field">
+        <label for="grpName">Group name</label>
+        <input type="text" id="grpName" maxlength="60" autocomplete="off" spellcheck="false"
+               placeholder="e.g. WT + glucose">
+      </div>
+      <div class="help" id="grpHelp"></div>
+    </div>
+    </div>
+
+    <div class="err" id="grpErr"></div>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="grpCancel">Cancel</button>
+      <button type="submit" class="primary" id="grpOk">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- culture volume -->
+<dialog id="volDlg">
+  <form method="dialog" class="dlg-body" id="volForm">
+    <p class="dlg-title">Culture volume</p>
+    <p class="dlg-sub" id="volSub"></p>
+
+    <label class="check-row">
+      <input type="checkbox" id="volCuvette">
+      <span>Cuvette mode
+        <span class="sub">Every OD reading takes a sample out of the tube.</span>
+      </span>
+    </label>
+
+    <div class="field">
+      <label for="volInit">Starting volume (mL)</label>
+      <div class="stepper">
+        <button type="button" data-for="volInit" data-step="-0.5" aria-label="Less starting volume">−</button>
+        <input type="number" id="volInit" step="any" min="0" inputmode="decimal" placeholder="5" required>
+        <button type="button" data-for="volInit" data-step="0.5" aria-label="More starting volume">+</button>
+      </div>
+    </div>
+
+    <div class="field" id="volSampleField">
+      <label for="volSample">Removed per reading (mL)</label>
+      <div class="stepper">
+        <button type="button" data-for="volSample" data-step="-0.05" aria-label="Smaller sample">−</button>
+        <input type="number" id="volSample" step="any" min="0" inputmode="decimal" placeholder="0.2">
+        <button type="button" data-for="volSample" data-step="0.05" aria-label="Larger sample">+</button>
+      </div>
+      <div class="help" id="volSampleHelp"></div>
+    </div>
+
+    <label class="check-row">
+      <input type="checkbox" id="volAll">
+      <span>Apply to every culture in this project
+        <span class="sub">Readings already taken keep the volume they recorded.</span>
+      </span>
+    </label>
+
+    <div class="err" id="volErr"></div>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="volCancel">Cancel</button>
+      <button type="submit" class="primary" id="volOk">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- new / rename project -->
+<dialog id="projDlg">
+  <form method="dialog" class="dlg-body" id="projForm">
+    <p class="dlg-title" id="projTitle">New project</p>
+    <p class="dlg-sub" id="projSub">Give it a name — it's used for the CSV file name.</p>
+    <div class="field">
+      <label for="projName">Project name</label>
+      <input type="text" id="projName" autocomplete="off" placeholder="Glycerol growth curves" required>
+      <div class="help" id="projPreview"></div>
+    </div>
+    <div class="err" id="projErr"></div>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="projCancel">Cancel</button>
+      <button type="submit" class="primary" id="projOk">Create</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- confirm delete -->
+<dialog id="confirmDlg">
+  <div class="dlg-body">
+    <p class="dlg-title" id="confirmTitle">Delete?</p>
+    <p class="dlg-sub" id="confirmSub"></p>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="confirmCancel">Cancel</button>
+      <button type="button" class="primary" id="confirmOk" style="background:var(--critical)">Delete</button>
+    </div>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+
+/* ============================================================
+   Model
+   projects: [{ id, name, createdAt, cultures, groups: [{ id, name }] }]
+   A group holds technical replicates of one culture. c.groupId names the group
+   and c.repNo is this culture's number inside it, so a group "Pyruvate" holds
+   the cultures named Pyruvate 1, Pyruvate 2, …
+
+   cultures: [{ id, name, notes, tab, groupId, repNo,
+                running, startedAt, accumMs,
+                cuvette, initialMl, sampleMl,
+                measurements: [{ id, t, od, dilution, vol, at, use }] }]
+   t = elapsed stopwatch milliseconds at the moment of the reading
+   od = final OD (reading x dilution)
+   vol = millilitres taken out of the tube for this reading (0 if none)
+   ============================================================ */
+
+const STORE_KEY = "od-tracker.v2";      // v2 groups cultures into projects
+const LEGACY_KEY = "od-tracker.v1";
+const MIN_FIT_POINTS = 3;   // growth rate appears once this many points are in the fit
+
+// Volume defaults for a new culture. Declared up here because load() stamps them
+// onto cultures saved before volumes existed, and load() runs first of all.
+const VOL_DEFAULTS = { cuvette: true, initialMl: 5, sampleMl: 0.2 };
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+/* ---------- series identity ----------
+   Every culture gets its own slot, assigned at creation and kept for life, so
+   hiding or deleting one never re-identifies the others.
+
+   Identity is a hue AND a line pattern, not hue alone. There are only eight
+   hues that stay apart under colour-vision deficiency, so slot 9 reuses hue 1
+   with a dashed line rather than becoming a second, indistinguishable blue.
+   8 hues x 4 patterns = 32 series that can be told apart on sight.          */
+
+const SERIES_HUES = 8;
+const SERIES_DASHES = ["", "7 4", "2 3", "11 3 2 3"];   // solid, dashed, dotted, dash-dot
+
+function assignColor(cultures) {
+  const used = new Set(cultures.map(c => c.color).filter(n => Number.isInteger(n)));
+  for (let i = 0; ; i++) if (!used.has(i)) return i;
+}
+
+const slotOf   = c => Number.isInteger(c.color) ? c.color : 0;
+const colorVar = c => `var(--s${(slotOf(c) % SERIES_HUES) + 1})`;
+const dashOf   = c => SERIES_DASHES[Math.floor(slotOf(c) / SERIES_HUES) % SERIES_DASHES.length];
+
+// a legend key that matches the plotted line exactly, pattern included
+const lineKey = c => `<svg class="lg-key" width="18" height="8" aria-hidden="true">
+    <line x1="1" y1="4" x2="17" y2="4" style="stroke:${colorVar(c)};stroke-width:3;stroke-linecap:round${
+      dashOf(c) ? `;stroke-dasharray:${dashOf(c)}` : ""}"/></svg>`;
+
+/* ---------- replicate groups ----------
+   A group is a set of technical replicates — the same culture measured more than
+   once. The group carries the name; each member carries its number within it, so
+   a group called "Pyruvate" holds Pyruvate 1, Pyruvate 2, and so on, and the
+   culture's own name is kept in step with both.                               */
+
+const groupsOf  = p => (p && Array.isArray(p.groups) ? p.groups : []);
+const groupById = (p, id) => groupsOf(p).find(g => g.id === id) || null;
+const groupOf   = c => groupById(P(), c.groupId);
+const membersOf = (p, id) => p.cultures.filter(c => c.groupId === id);
+
+const repName = (g, c) => `${g.name} ${c.repNo}`;
+
+/* Numbers are handed out one above the highest ever used in the group, never by
+   counting members: delete Pyruvate 2 and the readings filed under Pyruvate 3
+   must not silently become Pyruvate 2. */
+function nextRepNo(p, gid) {
+  const used = membersOf(p, gid).map(c => c.repNo).filter(Number.isInteger);
+  return used.length ? Math.max(...used) + 1 : 1;
+}
+
+function joinGroup(p, c, g) {
+  if (c.groupId !== g.id) {
+    c.repNo = nextRepNo(p, g.id);
+    c.groupId = g.id;
+  }
+  c.name = repName(g, c);
+}
+
+// renaming the group renames its members with it — that is what makes them read
+// as one set, and the dialog says so before you save
+function renameGroup(p, g, name) {
+  g.name = name;
+  for (const c of membersOf(p, g.id)) c.name = repName(g, c);
+}
+
+/* Drop one culture out of its group. No confirmation: it touches only this
+   culture and the chip puts it straight back. The name it was given stays —
+   silently renaming a culture that holds readings would be worse than a stale
+   name the user can edit. */
+function leaveGroup(c) {
+  c.groupId = null;
+  c.repNo = null;
+  pruneGroups(P());
+  save();
+  renderAll();
+}
+
+/* Delete the group itself, which ungroups every member — the cultures, their
+   names and their readings are untouched. */
+function deleteGroup(p, g) {
+  for (const c of membersOf(p, g.id)) { c.groupId = null; c.repNo = null; }
+  p.groups = groupsOf(p).filter(x => x.id !== g.id);
+}
+
+// a group with nobody left in it is noise in the picker
+function pruneGroups(p) {
+  if (!p) return;
+  p.groups = groupsOf(p).filter(g => membersOf(p, g.id).length > 0);
+}
+
+/* Spread of the growth rate across a group — the number replicates exist to
+   produce. Sample SD (n-1), because these are replicates drawn from a condition,
+   not the whole population of it. */
+function groupStats(members) {
+  return statsOf(members.map(fitGrowth).filter(f => f.ok).map(f => f.mu));
+}
+
+function statsOf(values) {
+  if (!values.length) return null;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  if (values.length < 2) return { n: 1, mean, sd: null };
+  const sd = Math.sqrt(values.reduce((s, v) => s + (v - mean) ** 2, 0) / (values.length - 1));
+  return { n: values.length, mean, sd };
+}
+
+// n counts the replicates the spread is over — never "1 fit", which is a
+// different claim about a single reading
+const groupStatText = st => !st ? "no fit yet"
+  : st.sd === null ? `μ ${st.mean.toFixed(3)} h⁻¹ · n = 1`
+  : `μ ${st.mean.toFixed(3)} ± ${st.sd.toFixed(3)} h⁻¹ · n = ${st.n}`;
+
+let state = load();
+let openId = null;          // which project is open; deliberately not persisted,
+                            // so opening the app always lands on the project list
+
+function normaliseGroups(p) {
+  if (!Array.isArray(p.groups)) p.groups = [];
+  const live = new Map();
+  p.groups = p.groups.filter(g => {
+    if (!g || typeof g.id !== "string" || live.has(g.id)) return false;
+    if (typeof g.name !== "string" || !g.name.trim()) g.name = "Replicates";
+    delete g.kind;                     // there is only one kind of group now
+    live.set(g.id, g);
+    return true;
+  });
+
+  for (const c of p.cultures) {
+    // Saved when groups came in biological and technical flavours: the technical
+    // one wins, since that is the level being kept, and a culture that only ever
+    // had a biological group keeps it rather than being silently ungrouped.
+    const id = [c.techId, c.groupId, c.bioId].find(x => live.has(x)) || null;
+    delete c.bioId;
+    delete c.techId;
+    c.groupId = id;
+    if (!id) c.repNo = null;
+  }
+
+  // number anything that arrived without one, in the order it sits in the project
+  for (const g of p.groups) {
+    let next = 1;
+    for (const c of membersOf(p, g.id)) {
+      if (!Number.isInteger(c.repNo)) c.repNo = next;
+      next = Math.max(next, c.repNo) + 1;
+    }
+  }
+  pruneGroups(p);
+}
+
+function normaliseCultures(cultures) {
+  // Every culture must end up with a unique integer slot. Two cases to repair:
+  // `undefined` (saved before series colours existed) and `null` (saved while an
+  // 8-slot cap was in force, which meant "no slot"). A duplicate is repaired too
+  // — two cultures sharing a slot would be indistinguishable on the chart.
+  const seen = new Set();
+  for (const c of cultures) {
+    if (!Number.isInteger(c.color) || seen.has(c.color)) {
+      let i = 0;
+      while (seen.has(i)) i++;
+      c.color = i;
+    }
+    seen.add(c.color);
+    if (c.hidden === undefined) c.hidden = false;
+
+    // Volumes, added later than the rest of the model. Cuvette mode is on by
+    // default, so readings saved before volumes existed are stamped with the
+    // default sample size — they were cuvette readings too.
+    if (typeof c.cuvette !== "boolean")    c.cuvette   = VOL_DEFAULTS.cuvette;
+    if (!Number.isFinite(c.initialMl))     c.initialMl = VOL_DEFAULTS.initialMl;
+    if (!Number.isFinite(c.sampleMl))      c.sampleMl  = VOL_DEFAULTS.sampleMl;
+    for (const m of c.measurements || []) {
+      if (!Number.isFinite(m.vol)) m.vol = c.cuvette ? c.sampleMl : 0;
+    }
+  }
+  return cultures;
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.projects)) {
+        for (const p of parsed.projects) {
+          if (!Array.isArray(p.cultures)) p.cultures = [];
+          normaliseCultures(p.cultures);
+          normaliseGroups(p);
+        }
+        return parsed;
+      }
+    }
+    // Migrate a pre-projects save rather than dropping it on the floor.
+    const legacy = localStorage.getItem(LEGACY_KEY);
+    if (legacy) {
+      const old = JSON.parse(legacy);
+      if (old && Array.isArray(old.cultures) && old.cultures.length) {
+        const migrated = {
+          projects: [{
+            id: uid(), name: "My cultures", createdAt: Date.now(), groups: [],
+            cultures: normaliseCultures(old.cultures)
+          }]
+        };
+        localStorage.setItem(STORE_KEY, JSON.stringify(migrated));
+        console.info(`Migrated ${old.cultures.length} culture(s) into a project.`);
+        return migrated;
+      }
+    }
+  } catch (e) {
+    // Never let a read failure silently become "no data", because the next save
+    // would overwrite the real thing. Stash whatever was there first.
+    console.error("Could not read saved data:", e);
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      for (const k of [STORE_KEY, LEGACY_KEY]) {
+        const raw = localStorage.getItem(k);
+        if (raw) localStorage.setItem(`${k}.backup-${stamp}`, raw);
+      }
+      console.error("A copy of the previous data was kept under "
+                  + `"${STORE_KEY}.backup-…" in localStorage.`);
+    } catch (_) { /* storage may be full; nothing more we can do */ }
+  }
+  return { projects: [] };
+}
+
+const P = () => state.projects.find(p => p.id === openId) || null;
+const cultures = () => (P() ? P().cultures : []);
+
+function save() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+  catch (e) { console.warn("Could not save data:", e); }
+}
+
+const byId = id => cultures().find(c => c.id === id);
+
+
+/* ---------- stopwatch ---------- */
+
+function elapsed(c) {
+  return c.accumMs + (c.running ? Date.now() - c.startedAt : 0);
+}
+
+function toggleTimer(c) {
+  if (c.running) {
+    c.accumMs = elapsed(c);
+    c.running = false;
+    c.startedAt = null;
+  } else {
+    c.startedAt = Date.now();
+    c.running = true;
+  }
+  save();
+  renderCard(c.id);
+}
+
+function resetTimer(c) {
+  c.running = false;
+  c.startedAt = null;
+  c.accumMs = 0;
+  save();
+  renderCard(c.id);
+}
+
+/* Every culture in the batch shares one timestamp, so cultures started together
+   stay in step — reading Date.now() per culture would stagger them by a few ms. */
+function startAll() {
+  const now = Date.now();
+  let changed = false;
+  for (const c of cultures()) {
+    if (c.running) continue;      // already running: leave its clock untouched
+    c.startedAt = now;
+    c.running = true;
+    changed = true;
+  }
+  if (!changed) return;
+  save();
+  renderAll();
+}
+
+function pauseAll() {
+  let changed = false;
+  for (const c of cultures()) {
+    if (!c.running) continue;
+    c.accumMs = elapsed(c);
+    c.running = false;
+    c.startedAt = null;
+    changed = true;
+  }
+  if (!changed) return;
+  save();
+  renderAll();
+}
+
+/* ---------- volume ----------
+   What is left in a tube is derived from its readings, never stored: delete a
+   reading and the sample it took comes back, with no running total to go stale.
+
+   Every reading carries the millilitres it actually removed, rather than the
+   card multiplying "readings x current sample size" — change the sample size
+   halfway through a run and the earlier readings must keep telling the truth. */
+
+// read through a default, so a culture saved before volumes existed still works
+const cuvetteOn = c => c.cuvette !== false;
+const initialOf = c => Number.isFinite(c.initialMl) ? c.initialMl : VOL_DEFAULTS.initialMl;
+const sampleOf  = c => Number.isFinite(c.sampleMl)  ? c.sampleMl  : VOL_DEFAULTS.sampleMl;
+
+const drawnOf    = m => (Number.isFinite(m.vol) && m.vol > 0 ? m.vol : 0);
+const drawnTotal = c => c.measurements.reduce((sum, m) => sum + drawnOf(m), 0);
+const volumeLeft = c => initialOf(c) - drawnTotal(c);
+
+// how many more readings the tube can still give at the current sample size
+// the epsilon keeps 4.8 / 0.2 from floor()ing to 23 — binary floats make it 23.999…
+const readingsLeft = c => (cuvetteOn(c) && sampleOf(c) > 0)
+  ? Math.max(0, Math.floor(volumeLeft(c) / sampleOf(c) + 1e-9))
+  : Infinity;
+
+const fmtMl = ml => (Math.abs(ml) < 10 ? ml.toFixed(2) : ml.toFixed(1));
+
+/* ---------- formatting ---------- */
+
+function fmtClock(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return { main: `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`, frac: `:${String(s).padStart(2,"0")}` };
+}
+
+function fmtHours(ms) {
+  const h = ms / 3.6e6;
+  return h < 10 ? h.toFixed(2) : h.toFixed(1);
+}
+
+// duration in hours -> "1 h 47 min" / "38 min" / "2.1 h"
+function fmtDuration(hours) {
+  if (!isFinite(hours) || hours < 0) return "—";
+  const mins = Math.round(hours * 60);
+  if (mins < 90) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+const fmtOD = v => v >= 10 ? v.toFixed(2) : v.toFixed(3);
+
+/* ---------- growth-rate fit ----------
+   Exponential growth: OD(t) = OD0 * e^(mu * t)
+   => ln(OD) is linear in t, and the slope is the specific growth rate mu (per hour).
+   Least-squares fit of ln(OD) against elapsed hours.
+   ------------------------------------- */
+
+function fitGrowth(c) {
+  const pts = c.measurements
+    .filter(m => m.use !== false && m.od > 0)
+    .map(m => ({ x: m.t / 3.6e6, y: Math.log(m.od) }))
+    .sort((a, b) => a.x - b.x);
+
+  const n = pts.length;
+  if (n < MIN_FIT_POINTS) return { ok: false, n };
+
+  const mx = pts.reduce((s, p) => s + p.x, 0) / n;
+  const my = pts.reduce((s, p) => s + p.y, 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (const p of pts) {
+    sxy += (p.x - mx) * (p.y - my);
+    sxx += (p.x - mx) ** 2;
+    syy += (p.y - my) ** 2;
+  }
+  if (sxx === 0) return { ok: false, n };            // all readings at the same time
+
+  const mu = sxy / sxx;                               // per hour
+  const intercept = my - mu * mx;                     // ln(OD) at t = 0
+  const r2 = syy === 0 ? 1 : (sxy * sxy) / (sxx * syy);
+  const doubling = mu > 0 ? Math.LN2 / mu : Infinity; // hours
+
+  return { ok: true, n, mu, intercept, r2, doubling,
+           xMin: pts[0].x, xMax: pts[n - 1].x };
+}
+
+// elapsed hours at which the fit reaches a target OD
+const timeToOD = (fit, target) =>
+  fit.ok && fit.mu > 0 ? (Math.log(target) - fit.intercept) / fit.mu : Infinity;
+
+function r2Badge(r2) {
+  if (r2 >= 0.98) return { cls: "good",    mark: "●", text: "excellent fit" };
+  if (r2 >= 0.90) return { cls: "warning", mark: "▲", text: "fair fit" };
+  return { cls: "serious", mark: "▲", text: "poor fit — check phase" };
+}
+
+/* ============================================================
+   Rendering
+   ============================================================ */
+
+const gridEl  = document.getElementById("grid");
+const emptyEl = document.getElementById("empty");
+const esc = s => String(s).replace(/[&<>"']/g, ch =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
+
+let view = "cards";
+
+const projEl      = document.getElementById("projects");
+const projEmptyEl = document.getElementById("projEmpty");
+const compareEl   = document.getElementById("compare");
+const startAllBtn = document.getElementById("startAll");
+const pauseAllBtn = document.getElementById("pauseAll");
+
+// "Start all" is dead once everything runs, "Pause all" once nothing does
+function syncBulkButtons() {
+  const cs = P() ? cultures() : [];
+  const running = cs.filter(c => c.running).length;
+  startAllBtn.disabled = cs.length === 0 || running === cs.length;
+  pauseAllBtn.disabled = running === 0;
+}
+
+startAllBtn.onclick = startAll;
+pauseAllBtn.onclick = pauseAll;
+
+function renderAll() {
+  const inProject = !!P();
+
+  // header adapts to which screen we're on
+  document.getElementById("backBtn").hidden     = !inProject;
+  document.getElementById("viewsw").hidden      = !inProject;
+  document.getElementById("exportAll").hidden   = !inProject;
+  startAllBtn.hidden = !inProject;
+  pauseAllBtn.hidden = !inProject;
+  syncBulkButtons();
+  document.getElementById("addBtn").hidden      = !inProject;
+  document.getElementById("addProjBtn").hidden  = inProject;
+  document.getElementById("appTitle").classList.toggle("clickable", inProject);
+  document.getElementById("appTitle").title = inProject ? "Rename project" : "";
+  document.getElementById("appTitle").innerHTML = inProject
+    ? `${esc(P().name)} <span>· ${P().cultures.length} culture${P().cultures.length === 1 ? "" : "s"}</span>`
+    : `OD Tracker <span>· projects</span>`;
+
+  if (!inProject) {
+    projEl.innerHTML = "";
+    for (const p of state.projects) projEl.appendChild(buildProject(p));
+    const none = state.projects.length === 0;
+    projEl.hidden = none;
+    projEmptyEl.hidden = !none;
+    gridEl.hidden = true;
+    compareEl.hidden = true;
+    emptyEl.hidden = true;
+    return;
+  }
+
+  projEl.hidden = true;
+  projEmptyEl.hidden = true;
+  gridEl.innerHTML = "";
+  for (const c of cultures()) gridEl.appendChild(buildCard(c));
+  const none = cultures().length === 0;
+  emptyEl.hidden = !none;
+  gridEl.hidden = none || view !== "cards";
+  compareEl.hidden = none || view !== "compare";
+  if (!none && view === "compare") drawOverlay();
+}
+
+function openProject(id) {
+  openId = id;
+  view = "cards";
+  document.querySelectorAll(".viewsw button").forEach(b =>
+    b.setAttribute("aria-selected", String(b.dataset.view === "cards")));
+  renderAll();
+  scrollTo(0, 0);
+}
+
+function closeProject() {
+  openId = null;
+  renderAll();
+  scrollTo(0, 0);
+}
+
+function buildProject(p) {
+  const el = document.createElement("button");
+  el.className = "proj";
+  el.dataset.proj = p.id;
+
+  const n = p.cultures.length;
+  const running = p.cultures.filter(c => c.running).length;
+  const readings = p.cultures.reduce((s, c) => s + c.measurements.length, 0);
+  const created = p.createdAt
+    ? new Date(p.createdAt).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
+    : "";
+
+  el.innerHTML = `
+    <div class="proj-name">${esc(p.name)}</div>
+    <div class="proj-meta">${n} culture${n === 1 ? "" : "s"} · ${readings} reading${readings === 1 ? "" : "s"}</div>
+    ${running
+      ? `<div class="proj-live"><span class="dot" style="background:var(--good)"></span>${running} running</div>`
+      : `<div class="proj-date">${created ? "Created " + created : ""}</div>`}
+    <span class="proj-del" role="button" tabindex="0" data-del title="Delete project" aria-label="Delete project">✕</span>`;
+
+  el.onclick = e => {
+    if (e.target.closest("[data-del]")) return;
+    openProject(p.id);
+  };
+  const del = el.querySelector("[data-del]");
+  const remove = e => {
+    e.stopPropagation();
+    confirmAction("Delete project?",
+      `“${p.name}” and its ${p.cultures.length} culture${p.cultures.length === 1 ? "" : "s"} will be removed. This cannot be undone.`,
+      "Delete", () => {
+        state.projects = state.projects.filter(x => x.id !== p.id);
+        save(); renderAll();
+      });
+  };
+  del.onclick = remove;
+  del.onkeydown = e => { if (e.key === "Enter" || e.key === " ") remove(e); };
+  return el;
+}
+
+function setView(v) {
+  view = v;
+  document.querySelectorAll(".viewsw button").forEach(b =>
+    b.setAttribute("aria-selected", String(b.dataset.view === v)));
+  renderAll();
+}
+document.querySelectorAll(".viewsw button").forEach(b => {
+  b.onclick = () => setView(b.dataset.view);
+});
+document.getElementById("backBtn").onclick = closeProject;
+document.getElementById("cmpExport").onclick = () =>
+  downloadCSV(csvFor(cultures()), exportName(P() ? P().name : ""));
+
+function renderCard(id) {
+  const c = byId(id);
+  const old = gridEl.querySelector(`[data-card="${id}"]`);
+  if (!c || !old) return renderAll();
+  old.replaceWith(buildCard(c));
+  syncBulkButtons();   // one culture starting or pausing changes what "all" means
+}
+
+function buildCard(c) {
+  const el = document.createElement("section");
+  el.className = "card";
+  el.dataset.card = c.id;
+
+  const ms = elapsed(c);
+  const t = fmtClock(ms);
+  const fit = fitGrowth(c);
+  const tab = c.tab || "data";
+  const used = c.measurements.filter(m => m.use !== false && m.od > 0).length;
+
+  el.innerHTML = `
+    <div class="card-head">
+      <div class="name-row">
+        <input class="name" value="${esc(c.name)}" data-act="rename" aria-label="Culture name" spellcheck="false">
+        <button class="icon ghost" data-act="delete" title="Delete culture" aria-label="Delete culture">✕</button>
+      </div>
+      <div class="grp-row">${groupChipHTML(c)}</div>
+      <div class="clock-row">
+        <div class="clock"><span class="clock-main">${t.main}</span><span class="frac">${t.frac}</span></div>
+        <div class="state ${c.running ? "running" : ""}">
+          <span class="dot"></span><span class="state-text">${c.running ? "Running" : (ms > 0 ? "Paused" : "Not started")}</span>
+        </div>
+      </div>
+      <div class="controls">
+        <button data-act="toggle">${c.running ? "Pause" : (ms > 0 ? "Resume" : "Start")}</button>
+        <button data-act="reset" ${ms === 0 && !c.running ? "disabled" : ""}>Reset</button>
+        <button class="primary" data-act="record">Record OD</button>
+      </div>
+    </div>
+
+    ${statsHTML(fit, c)}
+
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="data"  aria-selected="${tab==="data"}">Data<span class="count">${c.measurements.length}</span></button>
+      <button class="tab" role="tab" data-tab="curve" aria-selected="${tab==="curve"}">Curve</button>
+      <button class="tab" role="tab" data-tab="notes" aria-selected="${tab==="notes"}">Notes${c.notes.trim() ? '<span class="count">•</span>' : ""}</button>
+    </div>
+
+    <div class="panel">${
+      tab === "data"  ? dataHTML(c)  :
+      tab === "curve" ? curveHTML(c) : notesHTML(c)
+    }</div>`;
+
+  wireCard(el, c, fit, used);
+  return el;
+}
+
+/* The chip says which set of technical replicates this culture belongs to, and
+   which member of it this one is. */
+function groupChipHTML(c) {
+  const g = groupOf(c);
+  if (!g) return `<button type="button" class="chip none" data-act="group"
+      title="Group this culture with its technical replicates">+ Replicate group</button>`;
+  const n = membersOf(P(), g.id).length;
+  return `<button type="button" class="chip" data-act="group"
+      title="${esc(g.name)} — ${n} technical replicate${n === 1 ? "" : "s"}">
+      <span class="chip-name">${esc(g.name)}</span>
+      <span class="rep-no">#${c.repNo}</span>
+      <span class="chip-x" role="button" tabindex="0" data-ungroup
+            title="Take this culture out of ${esc(g.name)}"
+            aria-label="Remove this culture from ${esc(g.name)}">✕</span>
+    </button>`;
+}
+
+function statsHTML(fit, c) {
+  if (!fit.ok) {
+    const need = MIN_FIT_POINTS - fit.n;
+    return `<div class="stats">
+      <div class="stat">
+        <div class="label">Growth rate <span class="sym">μ</span></div>
+        <div class="value pending">${need > 0
+          ? `${need} more reading${need > 1 ? "s" : ""}`
+          : "needs spread in time"}</div>
+        <div class="sub">${fit.n} of ${MIN_FIT_POINTS} measurements</div>
+      </div>
+      ${volumeStatHTML(c)}
+    </div>`;
+  }
+
+  const b = r2Badge(fit.r2);
+  const last = c.measurements.reduce((a, m) => (a && a.t > m.t ? a : m), null);
+  const target = fit.mu > 0 ? nextTarget(last ? last.od : 0) : null;
+  const tTarget = target ? timeToOD(fit, target) : Infinity;
+  const remaining = target ? tTarget - elapsed(c) / 3.6e6 : Infinity;
+
+  return `<div class="stats">
+    <div class="stat">
+      <div class="label">Growth rate <span class="sym">μ</span></div>
+      <div class="value">${fit.mu.toFixed(3)} <span style="font-size:12px;color:var(--text-secondary);font-weight:500">h⁻¹</span></div>
+      <div class="badge ${b.cls}"><span class="mark">${b.mark}</span>R² ${fit.r2.toFixed(3)} · ${b.text}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Doubling time</div>
+      <div class="value">${fit.mu > 0 ? fmtDuration(fit.doubling) : "—"}</div>
+      <div class="sub">${fit.mu > 0 ? `from ${fit.n} points` : "no net growth"}</div>
+    </div>
+    <div class="stat">
+      <div class="label">${target ? `Reaches OD ${target}` : "Trend"}</div>
+      <div class="value" ${target ? `data-reach data-reach-at="${tTarget}"` : ""}>${
+        target ? reachText(remaining) : "declining"
+      }</div>
+      <div class="sub" ${target ? "data-reach-sub" : ""}>${
+        target ? reachSub(remaining) : "μ ≤ 0"
+      }</div>
+    </div>
+    ${volumeStatHTML(c)}
+  </div>`;
+}
+
+/* The volume tile doubles as the way in to the volume settings — the only
+   control a culture has that isn't already on the card. */
+function volumeStatHTML(c) {
+  const left = volumeLeft(c);
+  const cuv  = cuvetteOn(c);
+  // readings left still decides the colour — it just isn't spelled out on the tile
+  const cls  = left <= 0 ? "out" : (cuv && readingsLeft(c) <= 3 ? "low" : "");
+  const sub  = !cuv      ? "cuvette mode off"
+             : left <= 0 ? "nothing left to sample"
+             : "";
+  return `<button type="button" class="stat" data-act="volume" title="Set the volumes for this culture">
+      <div class="label">Volume left</div>
+      <div class="value ${cls}">${fmtMl(left)} <span style="font-size:12px;color:var(--text-secondary);font-weight:500">mL</span></div>
+      <div class="sub">${sub}</div>
+    </button>`;
+}
+
+/* The "reaches OD" countdown is recomputed on every tick, not just when the card
+   renders, so it counts down in real time while the stopwatch runs.
+   `remaining` is in hours from now. */
+const reachText = remaining => remaining <= 0 ? "due now" : `~${fmtDuration(remaining)}`;
+const reachSub  = remaining => remaining <= 0 ? "take a reading" : "at current rate";
+
+// next conventional milestone above the latest reading
+function nextTarget(od) {
+  for (const v of [0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 2.0, 4.0]) if (v > od) return v;
+  return null;
+}
+
+function dataHTML(c) {
+  if (!c.measurements.length) {
+    return `<div class="no-data">No readings yet.<br>Press <strong>Record OD</strong> to log the first one.</div>
+            <p class="hint">Readings are timestamped with this culture's stopwatch, so the growth rate is independent of wall-clock time.</p>`;
+  }
+
+  // the column only earns its width once something has actually been removed
+  const showVol = c.measurements.some(m => drawnOf(m) > 0);
+  let left = initialOf(c);      // running total, walked down the readings in time order
+
+  const rows = [...c.measurements].sort((a, b) => a.t - b.t).map((m, i) => {
+    const off = m.use === false;
+    left -= drawnOf(m);
+    return `<tr class="${off ? "excluded" : ""}${m.note ? " has-note" : ""}" data-m="${m.id}">
+      <td>${i + 1}</td>
+      <td>${fmtHours(m.t)}</td>
+      <td class="od"><button type="button" class="cell-edit" data-act="edit-m"
+            title="Edit this reading" aria-label="Edit reading ${i + 1}, OD ${fmtOD(m.od)}">${fmtOD(m.od)}</button></td>
+      <td>${m.dilution > 1 ? `×${m.dilution}` : "—"}</td>
+      <td>${m.od > 0 ? Math.log(m.od).toFixed(3) : "—"}</td>
+      ${showVol ? `<td${left < 0 ? ` style="color:var(--critical)"` : ""}>${fmtMl(left)}</td>` : ""}
+      <td class="c"><input type="checkbox" data-act="use" ${off ? "" : "checked"}
+            title="Include this point in the growth-rate fit" aria-label="Include reading ${i + 1} in fit"></td>
+      <td class="act"><button class="row-btn" data-act="del-m" title="Delete reading" aria-label="Delete reading ${i + 1}">✕</button></td>
+    </tr>${m.note ? `<tr class="note-row ${off ? "excluded" : ""}" data-m="${m.id}">
+      <td colspan="${showVol ? 8 : 7}"><button type="button" class="note-text" data-act="edit-m"
+        title="Edit this reading">${esc(m.note)}</button></td>
+    </tr>` : ""}`;
+  }).join("");
+
+  const excluded = c.measurements.filter(m => m.use === false).length;
+
+  return `<div class="table-wrap"><table>
+      <thead><tr>
+        <th>#</th><th>Time (h)</th><th>OD₆₀₀</th><th>Dil.</th><th>ln OD</th>
+        ${showVol ? `<th title="Volume left in the tube after this reading">Vol (mL)</th>` : ""}
+        <th class="c" title="Include in growth-rate fit">Fit</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="table-foot">
+      <button data-act="export">Export CSV</button>
+      ${excluded ? `<span class="hint" style="margin:0">${excluded} point${excluded > 1 ? "s" : ""} excluded from fit</span>` : ""}
+    </div>
+    <p class="hint">Untick <em>Fit</em> to drop lag- or stationary-phase points — μ is computed only from the ticked rows.</p>`;
+}
+
+function notesHTML(c) {
+  return `<textarea class="notes" data-act="notes" spellcheck="true"
+    placeholder="Strain, plasmid, antibiotics, media, inoculum, temperature, shaking speed, induction…">${esc(c.notes)}</textarea>
+    <p class="hint">Saved automatically.</p>`;
+}
+
+function curveHTML(c) {
+  const pts = c.measurements.filter(m => m.od > 0);
+  if (pts.length < 2) {
+    return `<div class="no-data">The growth curve appears after 2 readings.<br>${pts.length} so far.</div>`;
+  }
+  return `<div class="chart-wrap">
+      <svg class="chart" data-act="chart" role="img"
+           aria-label="Semi-log growth curve: OD 600 against elapsed hours"></svg>
+      <div class="tooltip" data-tip></div>
+    </div>`;
+}
+
+/* ---------- events ---------- */
+
+function wireCard(el, c, fit, used) {
+  const on = (sel, ev, fn) => el.querySelectorAll(sel).forEach(n => n.addEventListener(ev, fn));
+
+  el.querySelector('[data-act="toggle"]').onclick = () => toggleTimer(c);
+  el.querySelector('[data-act="record"]').onclick = () => openRecord(c);
+  el.querySelector('[data-act="volume"]').onclick = () => openVolume(c);
+  on('[data-act="group"]', "click", e => {
+    // the ✕ sits inside the chip, so it has to claim the click first
+    if (e.target.closest("[data-ungroup]")) { leaveGroup(c); return; }
+    openGroup(c);
+  });
+  on("[data-ungroup]", "keydown", e => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault(); e.stopPropagation();
+    leaveGroup(c);
+  });
+  el.querySelector('[data-act="reset"]').onclick = () => {
+    confirmAction("Reset stopwatch?",
+      `The clock for “${c.name}” goes back to 00:00. Recorded readings keep their original times.`,
+      "Reset", () => resetTimer(c));
+  };
+  el.querySelector('[data-act="delete"]').onclick = () => {
+    confirmAction("Delete culture?",
+      `“${c.name}” and its ${c.measurements.length} reading${c.measurements.length === 1 ? "" : "s"} will be removed. This cannot be undone.`,
+      "Delete", () => {
+        P().cultures = P().cultures.filter(x => x.id !== c.id);
+        pruneGroups(P());
+        save(); renderAll();
+      });
+  };
+
+  // rename saves as you type, without re-rendering (keeps focus)
+  const nameInput = el.querySelector('[data-act="rename"]');
+  nameInput.oninput = () => { c.name = nameInput.value; save(); };
+  nameInput.onblur  = () => { if (!c.name.trim()) { c.name = "Untitled culture"; renderCard(c.id); } };
+
+  on(".tab", "click", e => {
+    c.tab = e.currentTarget.dataset.tab;
+    save(); renderCard(c.id);
+  });
+
+  const notes = el.querySelector('[data-act="notes"]');
+  if (notes) notes.oninput = () => { c.notes = notes.value; save(); };
+
+  on('[data-act="edit-m"]', "click", e => {
+    const id = e.currentTarget.closest("tr").dataset.m;
+    const m = c.measurements.find(x => x.id === id);
+    if (m) openEditReading(c, m);
+  });
+
+  on('[data-act="del-m"]', "click", e => {
+    const id = e.currentTarget.closest("tr").dataset.m;
+    c.measurements = c.measurements.filter(m => m.id !== id);
+    save(); renderCard(c.id);
+  });
+
+  on('[data-act="use"]', "change", e => {
+    const m = c.measurements.find(x => x.id === e.currentTarget.closest("tr").dataset.m);
+    if (m) { m.use = e.currentTarget.checked; save(); renderCard(c.id); }
+  });
+
+  const exportBtn = el.querySelector('[data-act="export"]');
+  if (exportBtn) exportBtn.onclick = () =>
+    downloadCSV(csvFor([c]), exportName(P() ? P().name : "", c.name));
+
+  const svg = el.querySelector('[data-act="chart"]');
+  if (svg) drawChart(svg, el.querySelector("[data-tip]"), c, fit);
+}
+
+/* ---------- record dialog ---------- */
+
+const recordDlg = document.getElementById("recordDlg");
+const odInput   = document.getElementById("odInput");
+const dilInput  = document.getElementById("dilInput");
+const volInput  = document.getElementById("volInput");
+const volField  = document.getElementById("volField");
+const recPair   = document.getElementById("recPair");
+// the dilution field shares its row with the volume field, so it has to know
+const showVolField = show => { volField.hidden = !show; recPair.classList.toggle("solo", !show); };
+const volAfter  = document.getElementById("volAfter");
+const noteInput = document.getElementById("noteInput");
+const recordErr = document.getElementById("recordErr");
+let recordTarget = null;
+let recordAtMs = 0;
+
+let editingId = null;        // null = recording a new reading, otherwise editing that one
+
+function openRecord(c) {
+  recordTarget = c;
+  editingId = null;
+  recordAtMs = elapsed(c);                     // freeze the time at the moment of the click
+  document.getElementById("recordTitle").innerHTML = "Record OD<sub>600</sub>";
+  document.getElementById("recordOk").textContent = "Record";
+  document.getElementById("recordSub").textContent =
+    `${c.name} · t = ${fmtHours(recordAtMs)} h${c.running ? "" : "  (stopwatch not running)"}`;
+  odInput.value = "";
+  dilInput.value = "";
+  noteInput.value = "";
+  showVolField(cuvetteOn(c));
+  volInput.value = cuvetteOn(c) ? String(sampleOf(c)) : "";
+  showVolAfter();
+  recordErr.textContent = "";
+  if (TOUCH) setKpField(odInput);
+  recordDlg.showModal();
+  odInput.focus();
+}
+
+/* Live "5.00 mL → 4.80 mL left" under the volume field. When editing, the
+   reading's own sample is added back first — otherwise correcting it would
+   look like a second draw on the same tube. */
+function showVolAfter() {
+  if (!recordTarget || volField.hidden) { volAfter.textContent = ""; return; }
+  const edited = editingId ? recordTarget.measurements.find(x => x.id === editingId) : null;
+  const before = volumeLeft(recordTarget) + (edited ? drawnOf(edited) : 0);
+  const draw   = parseFloat(volInput.value);
+  const after  = before - (isFinite(draw) && draw > 0 ? draw : 0);
+  volAfter.innerHTML = after < 0
+    ? `Only ${fmtMl(before)} mL left — this overdraws the tube.`
+    : `${fmtMl(before)} → <strong>${fmtMl(after)} mL</strong> left.`;
+  volAfter.style.color = after < 0 ? "var(--critical)" : "";
+}
+
+volInput.addEventListener("input", showVolAfter);
+
+// Correct a mistyped reading. The stored `od` is reading x dilution, so the
+// original reading is recovered by dividing it back out.
+function openEditReading(c, m) {
+  recordTarget = c;
+  editingId = m.id;
+  recordAtMs = m.t;                            // keep the time it was taken at
+  const dil = m.dilution > 0 ? m.dilution : 1;
+  document.getElementById("recordTitle").innerHTML = "Edit reading";
+  document.getElementById("recordOk").textContent = "Save";
+  document.getElementById("recordSub").textContent =
+    `${c.name} · recorded at t = ${fmtHours(m.t)} h`;
+  odInput.value = String(+(m.od / dil).toPrecision(12));   // trim float noise
+  dilInput.value = dil > 1 ? String(dil) : "";
+  // an old reading that drew a sample stays editable even if cuvette mode is now off
+  showVolField(cuvetteOn(c) || drawnOf(m) > 0);
+  volInput.value = String(+drawnOf(m).toPrecision(12));
+  showVolAfter();
+  noteInput.value = m.note || "";
+  recordErr.textContent = "";
+  if (TOUCH) setKpField(odInput);
+  recordDlg.showModal();
+  odInput.focus();
+  odInput.select();
+}
+
+document.getElementById("recordForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const reading = parseFloat(odInput.value);
+  const dil = dilInput.value.trim() === "" ? 1 : parseFloat(dilInput.value);
+
+  if (!isFinite(reading) || reading <= 0) {
+    recordErr.textContent = "Enter an OD greater than 0.";
+    odInput.focus(); return;
+  }
+  if (!isFinite(dil) || dil < 1) {
+    recordErr.textContent = "Dilution factor must be 1 or greater.";
+    dilInput.focus(); return;
+  }
+
+  // A cleared field means "this reading took nothing out", not "use the default".
+  const drawn = volField.hidden || volInput.value.trim() === "" ? 0 : parseFloat(volInput.value);
+  if (!isFinite(drawn) || drawn < 0) {
+    recordErr.textContent = "Volume removed must be 0 or more.";
+    volInput.focus(); return;
+  }
+
+  const note = noteInput.value.trim();
+
+  if (editingId) {
+    const m = recordTarget.measurements.find(x => x.id === editingId);
+    if (m) { m.od = reading * dil; m.dilution = dil; m.note = note; m.vol = drawn; }
+  } else {
+    recordTarget.measurements.push({
+      id: uid(), t: recordAtMs, od: reading * dil,
+      dilution: dil, vol: drawn, at: Date.now(), use: true, note
+    });
+    if (recordTarget.tab === "notes") recordTarget.tab = "data";
+  }
+  editingId = null;
+  save();
+  renderCard(recordTarget.id);
+  recordDlg.close();
+});
+
+document.getElementById("recordCancel").onclick = () => { editingId = null; recordDlg.close(); };
+// Deliberately not relying on the dialog's "close" event to reset editingId —
+// it does not fire reliably (Escape in particular). Both openRecord() and
+// openEditReading() set editingId when they open the dialog, so whatever it
+// holds while the dialog is shut can never be acted on.
+
+/* ---------- on-screen number pad ----------
+   A Raspberry Pi touch panel usually has no keyboard, and Record OD is the
+   action taken dozens of times a day — so the dialog carries its own pad.
+   Only shown on a coarse pointer; a desktop never sees it.              */
+
+const TOUCH = document.documentElement.classList.contains("touch");
+const keypad = document.getElementById("keypad");
+const kpTargetLabel = document.getElementById("kpTarget");
+let kpField = odInput;
+
+const KP_LABELS = new Map();     // filled once the inputs exist, below
+
+function setKpField(input) {
+  kpField = input;
+  kpTargetLabel.textContent = KP_LABELS.get(input) || "reading";
+}
+
+if (TOUCH) {
+  // These are type="number" on desktop. A number input REJECTS intermediate
+  // values like "0." — assigning one silently yields "" — so the pad could never
+  // build a decimal. Switch to text (inputmode keeps a numeric soft keyboard);
+  // the submit handler already parses and validates by hand.
+  for (const el of [odInput, dilInput, volInput]) {
+    el.type = "text";
+    el.setAttribute("inputmode", "decimal");
+  }
+  KP_LABELS.set(odInput, "reading");
+  KP_LABELS.set(dilInput, "dilution factor");
+  KP_LABELS.set(volInput, "volume removed");
+  KP_LABELS.set(noteInput, "note");
+  // The note field is included deliberately. If it were left out, focusing the
+  // note and then tapping a digit would append it to whichever numeric field was
+  // last active — silently corrupting a reading with no visible cause.
+  for (const el of [odInput, dilInput, volInput, noteInput]) {
+    el.addEventListener("focus", () => setKpField(el));
+    el.addEventListener("click", () => setKpField(el));
+  }
+
+  // Don't let a pad button steal focus from the field being typed into.
+  keypad.addEventListener("pointerdown", e => {
+    if (e.target.closest("[data-k]")) e.preventDefault();
+  });
+
+  keypad.addEventListener("click", e => {
+    const btn = e.target.closest("[data-k]");
+    if (!btn) return;
+    const k = btn.dataset.k;
+    const cur = kpField.value;
+    if (k === "back")       kpField.value = cur.slice(0, -1);
+    else if (k === "clear") kpField.value = "";
+    else if (k === ".") {
+      // "0." only makes sense for a number; in a note a dot is just a dot
+      if (kpField === noteInput) kpField.value = cur + ".";
+      else if (!cur.includes(".")) kpField.value = (cur || "0") + ".";
+    }
+    else                    kpField.value = cur + k;
+    recordErr.textContent = "";
+    if (kpField === volInput) showVolAfter();
+    kpField.focus();
+  });
+}
+
+/* ---------- replicate group dialog ---------- */
+
+const GRP_BLURB = "Technical replicates: the same culture measured more than once.";
+
+const grpDlg   = document.getElementById("grpDlg");
+const grpList  = document.getElementById("grpList");
+const grpName  = document.getElementById("grpName");
+const grpHelp  = document.getElementById("grpHelp");
+const grpEdit  = document.getElementById("grpEdit");
+const grpErr   = document.getElementById("grpErr");
+let grpTarget  = null;
+let grpPick    = "none";     // "none", "new", or an existing group id
+let grpShown   = null;       // which option the name field currently describes
+
+function openGroup(c) {
+  grpTarget = c;
+  grpPick = c.groupId || "none";
+  grpErr.textContent = "";
+  document.getElementById("grpTitle").textContent = "Replicate group";
+  document.getElementById("grpSub").textContent = `${c.name} — ${GRP_BLURB}`;
+
+  const p = P();
+  grpList.innerHTML = [
+    grpOptHTML("none", "Not a replicate", false, ""),
+    ...groupsOf(p).map(g => grpOptHTML(g.id, g.name, true, `${membersOf(p, g.id).length}`)),
+    grpOptHTML("new", "New group…", false, "")
+  ].join("");
+  grpList.querySelectorAll("[data-pick]").forEach(b => {
+    b.onclick = e => {
+      const del = e.target.closest("[data-del-grp]");
+      if (del) { askDeleteGroup(del.dataset.delGrp); return; }
+      grpPick = b.dataset.pick;
+      syncGroupForm();
+    };
+  });
+
+  grpShown = null;           // force the fields to refill for the culture just opened
+  syncGroupForm();
+  // re-entered after a delete, the dialog is already up — showModal() would throw
+  if (!grpDlg.open) grpDlg.showModal();
+}
+
+const grpOptHTML = (pick, label, deletable, n) =>
+  `<button type="button" class="grp-opt" data-pick="${pick}" aria-pressed="false">
+     <span class="grp-label">${esc(label)}</span>
+     ${n ? `<span class="n">${n}</span>` : ""}
+     ${deletable ? `<span class="grp-del" role="button" tabindex="0" data-del-grp="${pick}"
+        title="Delete this group" aria-label="Delete the group ${esc(label)}">✕</span>` : ""}
+   </button>`;
+
+/* Deleting a group reaches beyond the culture whose chip opened the picker, so
+   unlike every other control in this dialog it asks first — and it applies
+   immediately rather than waiting for Save, which only ever meant "this culture". */
+function askDeleteGroup(id) {
+  const p = P();
+  const g = groupById(p, id);
+  if (!g) return;
+  const n = membersOf(p, g.id).length;
+  confirmAction("Delete group?",
+    `“${g.name}” will be removed from ${n} culture${n === 1 ? "" : "s"}. The cultures and their readings stay.`,
+    "Delete", () => {
+      deleteGroup(p, g);
+      save();
+      renderAll();
+      if (grpTarget) openGroup(grpTarget);             // rebuild the list without it
+      else grpDlg.close();
+    });
+}
+
+// The name field refills only when the selection actually changes — otherwise a
+// rename in progress would be wiped on every redraw.
+function syncGroupForm() {
+  grpList.querySelectorAll("[data-pick]").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.pick === grpPick)));
+
+  const g = grpPick !== "none" && grpPick !== "new" ? groupById(P(), grpPick) : null;
+  grpEdit.hidden = grpPick === "none";
+  if (grpShown !== grpPick) {
+    grpShown = grpPick;
+    if (g)                      grpName.value = g.name;
+    else if (grpPick === "new") grpName.value = "";
+  }
+
+  const n = g ? membersOf(P(), g.id).length : 0;
+  grpHelp.textContent = g
+    ? `Renaming applies to all ${n} culture${n === 1 ? "" : "s"} — they become ${g.name || "…"} 1, ${g.name || "…"} 2, …`
+    : grpPick === "new" ? "Its cultures are named after the group: Pyruvate 1, Pyruvate 2, …" : "";
+  grpErr.textContent = "";
+}
+grpName.addEventListener("input", () => { grpErr.textContent = ""; });
+
+document.getElementById("grpForm").addEventListener("submit", e => {
+  e.preventDefault();
+  if (!grpTarget) return grpDlg.close();
+  const p = P();
+
+  if (grpPick === "none") {
+    grpTarget.groupId = null;
+    grpTarget.repNo = null;
+  } else {
+    const name = grpName.value.trim();
+    if (!name) {
+      grpErr.textContent = "Give the group a name.";
+      grpName.focus(); return;
+    }
+    if (grpPick === "new") {
+      const g = { id: uid(), name };
+      p.groups.push(g);
+      joinGroup(p, grpTarget, g);
+    } else {
+      const g = groupById(p, grpPick);
+      if (!g) { grpErr.textContent = "That group no longer exists."; return; }
+      // join first, so a culture arriving with a rename in the same save is
+      // numbered before it is named
+      joinGroup(p, grpTarget, g);
+      if (name !== g.name) renameGroup(p, g, name);
+    }
+  }
+
+  pruneGroups(p);
+  grpTarget = null;
+  save();
+  renderAll();
+  grpDlg.close();
+});
+
+document.getElementById("grpCancel").onclick = () => { grpTarget = null; grpDlg.close(); };
+
+/* ---------- culture volume dialog ---------- */
+
+const volDlg        = document.getElementById("volDlg");
+const volCuvette    = document.getElementById("volCuvette");
+const volInit       = document.getElementById("volInit");
+const volSample     = document.getElementById("volSample");
+const volSampleHelp = document.getElementById("volSampleHelp");
+const volAll        = document.getElementById("volAll");
+const volErr        = document.getElementById("volErr");
+let volTarget = null;
+
+function openVolume(c) {
+  volTarget = c;
+  volCuvette.checked = cuvetteOn(c);
+  volInit.value      = String(initialOf(c));
+  volSample.value    = String(sampleOf(c));
+  volAll.checked     = false;
+  volErr.textContent = "";
+  const n = c.measurements.length;
+  document.getElementById("volSub").textContent =
+    `${c.name} · ${fmtMl(drawnTotal(c))} mL taken over ${n} reading${n === 1 ? "" : "s"}`;
+  syncVolFields();
+  volDlg.showModal();
+}
+
+function syncVolFields() {
+  const on = volCuvette.checked;
+  volSample.disabled = !on;
+  document.querySelectorAll('#volForm [data-for="volSample"]').forEach(b => { b.disabled = !on; });
+  document.getElementById("volSampleField").style.opacity = on ? "" : ".5";
+  volSampleHelp.textContent = on
+    ? "Prefilled into every new reading; you can override it one reading at a time."
+    : "With cuvette mode off, a reading removes nothing.";
+}
+volCuvette.addEventListener("change", syncVolFields);
+
+// -/+ on the volume fields: the touch panel has no keyboard and no number pad here
+document.querySelectorAll("#volForm [data-step]").forEach(btn => {
+  btn.onclick = () => {
+    const input = document.getElementById(btn.dataset.for);
+    const cur = parseFloat(input.value);
+    const next = (isFinite(cur) ? cur : 0) + parseFloat(btn.dataset.step);
+    input.value = String(Math.max(0, Math.round(next * 100) / 100));   // 0.05 steps stay exact
+    volErr.textContent = "";
+  };
+});
+
+document.getElementById("volForm").addEventListener("submit", e => {
+  e.preventDefault();
+  if (!volTarget) return volDlg.close();
+
+  const init = parseFloat(volInit.value);
+  const samp = volSample.value.trim() === "" ? 0 : parseFloat(volSample.value);
+  if (!isFinite(init) || init <= 0) {
+    volErr.textContent = "Starting volume must be greater than 0.";
+    volInit.focus(); return;
+  }
+  if (!isFinite(samp) || samp < 0) {
+    volErr.textContent = "Sample volume must be 0 or more.";
+    volSample.focus(); return;
+  }
+
+  // Only the settings change here — readings keep the volume they recorded, so
+  // the history of a tube is never rewritten by a change of protocol.
+  const targets = volAll.checked ? cultures() : [volTarget];
+  for (const c of targets) {
+    c.cuvette   = volCuvette.checked;
+    c.initialMl = init;
+    c.sampleMl  = samp;
+  }
+  volTarget = null;
+  save();
+  renderAll();
+  volDlg.close();
+});
+
+document.getElementById("volCancel").onclick = () => { volTarget = null; volDlg.close(); };
+
+/* ---------- new / rename project ---------- */
+
+const projDlg     = document.getElementById("projDlg");
+const projNameIn  = document.getElementById("projName");
+const projErr     = document.getElementById("projErr");
+const projPreview = document.getElementById("projPreview");
+let projEditing = null;      // null = creating
+
+function showProjPreview() {
+  const n = projNameIn.value.trim();
+  projPreview.textContent = n
+    ? `Exports as ${exportName(n)}`
+    : "Exports as <project name>_<today's date>.csv";
+}
+projNameIn.addEventListener("input", () => { showProjPreview(); projErr.textContent = ""; });
+
+function openProjectDialog(project) {
+  projEditing = project || null;
+  document.getElementById("projTitle").textContent = project ? "Rename project" : "New project";
+  document.getElementById("projOk").textContent    = project ? "Save" : "Create";
+  projNameIn.value = project ? project.name : "";
+  projErr.textContent = "";
+  showProjPreview();
+  projDlg.showModal();
+  projNameIn.focus();
+  projNameIn.select();
+}
+
+document.getElementById("projForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const name = projNameIn.value.trim();
+  if (!name) {
+    projErr.textContent = "Give the project a name.";
+    projNameIn.focus(); return;
+  }
+  if (!nameToken(name)) {
+    projErr.textContent = "That name has no letters or numbers to build a file name from.";
+    projNameIn.focus(); return;
+  }
+  if (projEditing) {
+    projEditing.name = name;
+  } else {
+    const p = { id: uid(), name, createdAt: Date.now(), cultures: [], groups: [] };
+    state.projects.unshift(p);
+    save();
+    projDlg.close();
+    openProject(p.id);
+    return;
+  }
+  save();
+  renderAll();
+  projDlg.close();
+});
+document.getElementById("projCancel").onclick = () => projDlg.close();
+document.getElementById("addProjBtn").onclick = () => openProjectDialog(null);
+// clicking the project name in the header renames it
+document.getElementById("appTitle").addEventListener("click", () => {
+  if (P()) openProjectDialog(P());
+});
+
+/* ---------- confirm dialog ---------- */
+
+const confirmDlg = document.getElementById("confirmDlg");
+let confirmFn = null;
+
+function confirmAction(title, sub, okLabel, fn) {
+  document.getElementById("confirmTitle").textContent = title;
+  document.getElementById("confirmSub").textContent = sub;
+  document.getElementById("confirmOk").textContent = okLabel;
+  confirmFn = fn;
+  confirmDlg.showModal();
+}
+document.getElementById("confirmCancel").onclick = () => confirmDlg.close();
+document.getElementById("confirmOk").onclick = () => {
+  confirmDlg.close();
+  if (confirmFn) confirmFn();
+  confirmFn = null;
+};
+
+/* ============================================================
+   Chart — semi-log OD vs elapsed hours
+   ============================================================ */
+
+function drawChart(svg, tip, c, fit) {
+  const W = 460, H = 240;
+  const pad = { t: 12, r: 14, b: 34, l: 46 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.style.aspectRatio = `${W} / ${H}`;
+
+  const pts = c.measurements.filter(m => m.od > 0)
+    .map(m => ({ x: m.t / 3.6e6, y: m.od, use: m.use !== false }))
+    .sort((a, b) => a.x - b.x);
+
+  // ----- scales -----
+  const xMax = Math.max(...pts.map(p => p.x));
+  const xHi = xMax > 0 ? xMax * 1.04 : 1;
+  const X = v => pad.l + (v / xHi) * (W - pad.l - pad.r);
+
+  const logs = pts.map(p => Math.log10(p.y));
+  let lo = Math.min(...logs), hi = Math.max(...logs);
+  const spanPad = Math.max((hi - lo) * 0.12, 0.08);
+  lo -= spanPad; hi += spanPad;
+  const Y = v => pad.t + (1 - (Math.log10(v) - lo) / (hi - lo)) * (H - pad.t - pad.b);
+
+  // ----- ticks -----
+  const yTicks = [];
+  for (let d = Math.floor(lo); d <= Math.ceil(hi); d++) {
+    for (const m of [1, 2, 5]) {
+      const v = m * 10 ** d;
+      const L = Math.log10(v);
+      if (L >= lo && L <= hi) yTicks.push(v);
+    }
+  }
+  if (yTicks.length < 3) {                     // narrow range — subdivide further
+    yTicks.length = 0;
+    for (let d = Math.floor(lo); d <= Math.ceil(hi); d++)
+      for (let m = 1; m <= 9; m++) {
+        const v = m * 10 ** d, L = Math.log10(v);
+        if (L >= lo && L <= hi) yTicks.push(v);
+      }
+  }
+
+  const step = niceStep(xHi, 6);
+  const xTicks = [];
+  for (let v = 0; v <= xHi + 1e-9; v += step) xTicks.push(+v.toFixed(6));
+
+  const tickText = v => v >= 1 ? String(+v.toFixed(2)) : String(+v.toFixed(3));
+  let g = "";
+
+  // gridlines + axes
+  for (const v of yTicks) {
+    const y = Y(v).toFixed(1);
+    g += `<line class="gridline" x1="${pad.l}" y1="${y}" x2="${W - pad.r}" y2="${y}"/>
+          <text class="tick-label" x="${pad.l - 7}" y="${y}" text-anchor="end" dominant-baseline="middle">${tickText(v)}</text>`;
+  }
+  for (const v of xTicks) {
+    const x = X(v).toFixed(1);
+    g += `<text class="tick-label" x="${x}" y="${H - pad.b + 15}" text-anchor="middle">${+v.toFixed(2)}</text>`;
+  }
+  g += `<line class="axisline" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${H - pad.b}"/>
+        <line class="axisline" x1="${pad.l}" y1="${H - pad.b}" x2="${W - pad.r}" y2="${H - pad.b}"/>
+        <text class="axis-title" x="${(pad.l + W - pad.r) / 2}" y="${H - 3}" text-anchor="middle">Elapsed time (h)</text>
+        <text class="axis-title" x="${-(pad.t + H - pad.b) / 2}" y="11" text-anchor="middle" transform="rotate(-90)">OD₆₀₀</text>`;
+
+  // Fitted line (annotation — dashed, muted, never mistaken for the data).
+  //
+  // Clipped to the plot box by solving where it crosses the edges. Clamping the
+  // endpoints into range instead — which is what this used to do — pinned the
+  // line to the bottom axis whenever the fit extrapolated below the visible
+  // range (routine once lag-phase points are unticked). That made it look as
+  // though the culture started at OD 0, and worse, it changed the drawn slope,
+  // so the dashed line no longer represented the fitted growth rate.
+  if (fit.ok && isFinite(fit.mu)) {
+    const Ylog   = v => pad.t + (1 - (v - lo) / (hi - lo)) * (H - pad.t - pad.b);
+    const logAt  = x => (fit.intercept + fit.mu * x) / Math.LN10;   // log10 OD at time x
+    let x1 = 0, x2 = xHi, draw = true;
+
+    if (fit.mu !== 0) {
+      const xAtLog = v => (v * Math.LN10 - fit.intercept) / fit.mu;
+      const xa = xAtLog(lo), xb = xAtLog(hi);
+      x1 = Math.max(0,   Math.min(xa, xb));
+      x2 = Math.min(xHi, Math.max(xa, xb));
+      draw = x2 > x1;                       // any of it inside the plot at all?
+    } else {
+      draw = logAt(0) >= lo && logAt(0) <= hi;
+    }
+
+    if (draw)
+      g += `<line class="fitline" x1="${X(x1).toFixed(1)}" y1="${Ylog(logAt(x1)).toFixed(1)}"
+                   x2="${X(x2).toFixed(1)}" y2="${Ylog(logAt(x2)).toFixed(1)}"/>`;
+  }
+
+  // data line + markers
+  const col = colorVar(c);
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(" ");
+  g += `<path class="dataline" style="stroke:${col}" d="${d}"/>`;
+  for (const p of pts)
+    g += `<circle class="pt ${p.use ? "" : "off"}" style="${p.use ? `fill:${col}` : ""}" cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="4.5"/>`;
+
+  g += `<line class="crosshair" x1="0" y1="${pad.t}" x2="0" y2="${H - pad.b}" opacity="0" data-cross/>
+        <rect x="${pad.l}" y="${pad.t}" width="${W - pad.l - pad.r}" height="${H - pad.t - pad.b}" fill="transparent" data-hit/>`;
+
+  svg.innerHTML = g;
+
+  // ----- hover: crosshair + tooltip on the nearest point -----
+  const cross = svg.querySelector("[data-cross]");
+  const hit = svg.querySelector("[data-hit]");
+
+  hit.addEventListener("pointermove", ev => {
+    const box = svg.getBoundingClientRect();
+    const xv = ((ev.clientX - box.left) / box.width) * W;
+    let near = pts[0], best = Infinity;
+    for (const p of pts) {
+      const dist = Math.abs(X(p.x) - xv);
+      if (dist < best) { best = dist; near = p; }
+    }
+    cross.setAttribute("x1", X(near.x)); cross.setAttribute("x2", X(near.x));
+    cross.setAttribute("opacity", "1");
+    tip.innerHTML = `<span class="tt-od">OD ${fmtOD(near.y)}</span>
+                     <span class="tt-t"> · ${near.x.toFixed(2)} h</span>
+                     ${near.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
+    tip.style.left = `${(X(near.x) / W) * box.width}px`;
+    tip.style.top  = `${(Y(near.y) / H) * box.height - 10}px`;
+    tip.style.opacity = "1";
+  });
+  hit.addEventListener("pointerleave", () => {
+    cross.setAttribute("opacity", "0");
+    tip.style.opacity = "0";
+  });
+}
+
+/* ============================================================
+   Compare view — every culture on one semi-log axis.
+   Shared x-axis is each culture's own elapsed time, so cultures
+   inoculated at different clock times still line up at t = 0.
+   ============================================================ */
+
+function drawOverlay() {
+  const svg    = document.getElementById("cmpChart");
+  const tip    = document.getElementById("cmpTip");
+  const legend = document.getElementById("cmpLegend");
+  const sub    = document.getElementById("cmpSub");
+  const hint   = document.getElementById("cmpHint");
+
+  // a culture can be drawn as soon as it has 2+ positive readings
+  const all = cultures().map(c => ({
+    c,
+    fit: fitGrowth(c),
+    pts: c.measurements.filter(m => m.od > 0)
+           .map(m => ({ x: m.t / 3.6e6, y: m.od, use: m.use !== false }))
+           .sort((a, b) => a.x - b.x)
+  }));
+  const drawable = all.filter(s => s.pts.length >= 2);
+  const shown    = drawable.filter(s => !s.c.hidden);
+
+  legend.innerHTML = legendHTML(all);
+  legend.querySelectorAll("[data-lg]").forEach(el => {
+    el.onclick = () => {
+      const c = byId(el.dataset.lg);
+      if (!c) return;
+      c.hidden = !c.hidden;
+      save(); drawOverlay();
+    };
+  });
+
+  const thin = all.length - drawable.length;
+  sub.textContent = shown.length
+    ? `${shown.length} of ${all.length} plotted`
+    : "";
+  hint.textContent = [
+    "Tap a culture in the legend to hide or show it.",
+    thin ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs 2+ readings).` : ""
+  ].filter(Boolean).join(" ");
+
+  if (!shown.length) {
+    svg.innerHTML = "";
+    svg.removeAttribute("viewBox");
+    svg.style.aspectRatio = "";
+    tip.style.opacity = "0";
+    return;
+  }
+
+  const W = 900, H = 380;
+  const pad = { t: 14, r: 18, b: 40, l: 56 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.style.aspectRatio = `${W} / ${H}`;
+
+  const xMax = Math.max(...shown.flatMap(s => s.pts.map(p => p.x)));
+  const xHi = xMax > 0 ? xMax * 1.04 : 1;
+  const X = v => pad.l + (v / xHi) * (W - pad.l - pad.r);
+
+  const logs = shown.flatMap(s => s.pts.map(p => Math.log10(p.y)));
+  let lo = Math.min(...logs), hi = Math.max(...logs);
+  const spanPad = Math.max((hi - lo) * 0.12, 0.08);
+  lo -= spanPad; hi += spanPad;
+  const Y = v => pad.t + (1 - (Math.log10(v) - lo) / (hi - lo)) * (H - pad.t - pad.b);
+
+  // log ticks at 1/2/5 per decade, subdividing when the range is narrow
+  let yTicks = [];
+  for (let d = Math.floor(lo); d <= Math.ceil(hi); d++)
+    for (const m of [1, 2, 5]) {
+      const v = m * 10 ** d, L = Math.log10(v);
+      if (L >= lo && L <= hi) yTicks.push(v);
+    }
+  if (yTicks.length < 3) {
+    yTicks = [];
+    for (let d = Math.floor(lo); d <= Math.ceil(hi); d++)
+      for (let m = 1; m <= 9; m++) {
+        const v = m * 10 ** d, L = Math.log10(v);
+        if (L >= lo && L <= hi) yTicks.push(v);
+      }
+  }
+
+  const step = niceStep(xHi, 7);
+  const xTicks = [];
+  for (let v = 0; v <= xHi + 1e-9; v += step) xTicks.push(+v.toFixed(6));
+
+  const tickText = v => v >= 1 ? String(+v.toFixed(2)) : String(+v.toFixed(3));
+  let g = "";
+  for (const v of yTicks) {
+    const y = Y(v).toFixed(1);
+    g += `<line class="gridline" x1="${pad.l}" y1="${y}" x2="${W - pad.r}" y2="${y}"/>
+          <text class="tick-label" x="${pad.l - 8}" y="${y}" text-anchor="end" dominant-baseline="middle">${tickText(v)}</text>`;
+  }
+  for (const v of xTicks)
+    g += `<text class="tick-label" x="${X(v).toFixed(1)}" y="${H - pad.b + 17}" text-anchor="middle">${+v.toFixed(2)}</text>`;
+  g += `<line class="axisline" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${H - pad.b}"/>
+        <line class="axisline" x1="${pad.l}" y1="${H - pad.b}" x2="${W - pad.r}" y2="${H - pad.b}"/>
+        <text class="axis-title" x="${(pad.l + W - pad.r) / 2}" y="${H - 5}" text-anchor="middle">Elapsed time (h)</text>
+        <text class="axis-title" x="${-(pad.t + H - pad.b) / 2}" y="13" text-anchor="middle" transform="rotate(-90)">OD₆₀₀</text>`;
+
+  for (const s of shown) {
+    const col = colorVar(s.c);
+    const dash = dashOf(s.c);
+    const d = s.pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(" ");
+    g += `<path class="dataline" style="stroke:${col}${dash ? `;stroke-dasharray:${dash}` : ""}" d="${d}"/>`;
+    for (const p of s.pts)
+      g += `<circle class="pt" style="fill:${col}" cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="4"/>`;
+  }
+
+  // Direct labels only while they stay legible; past four, converging lines make
+  // end-labels collide and the legend carries identity instead.
+  if (shown.length <= 4) {
+    // Place end labels, then keep only those that don't collide. Nudging
+    // overlapping labels apart would detach them from their lines; the legend
+    // already carries identity, so a dropped label loses nothing.
+    const boxes = [];
+    for (const s of shown) {
+      const last = s.pts[s.pts.length - 1];
+      const label = trim(s.c.name, 16);
+      // Measure before placing: a label must never be clipped by the plot edge.
+      // ~6.2px per char at 11.5px semibold is close enough to decide the side.
+      const est = label.length * 6.2;
+      const px = X(last.x), flip = px + 10 + est > W - pad.r;
+      const y = Math.max(pad.t + 10, Y(last.y) - 8);
+      boxes.push({
+        label, flip, y,
+        x: px + (flip ? -8 : 8),
+        x0: flip ? px - 8 - est : px + 8,
+        x1: flip ? px - 8 : px + 8 + est
+      });
+    }
+    boxes.sort((a, b) => a.y - b.y);
+    const kept = [];
+    for (const b of boxes) {
+      const clash = kept.some(k =>
+        Math.abs(k.y - b.y) < 13 && b.x0 < k.x1 && k.x0 < b.x1);
+      if (!clash) kept.push(b);
+    }
+    for (const b of kept)
+      g += `<text class="series-label" x="${b.x.toFixed(1)}" y="${b.y.toFixed(1)}"
+              text-anchor="${b.flip ? "end" : "start"}"
+              style="fill:var(--text-secondary)">${esc(b.label)}</text>`;
+  }
+
+  g += `<line class="crosshair" x1="0" y1="${pad.t}" x2="0" y2="${H - pad.b}" opacity="0" data-cross/>
+        <rect x="${pad.l}" y="${pad.t}" width="${W - pad.l - pad.r}" height="${H - pad.t - pad.b}" fill="transparent" data-hit/>`;
+  svg.innerHTML = g;
+
+  const cross = svg.querySelector("[data-cross]");
+  const hit   = svg.querySelector("[data-hit]");
+
+  hit.addEventListener("pointermove", ev => {
+    const box = svg.getBoundingClientRect();
+    const xv = ((ev.clientX - box.left) / box.width) * W;
+    const yv = ((ev.clientY - box.top) / box.height) * H;
+    let best = null, bestD = Infinity;
+    for (const s of shown) {
+      for (const p of s.pts) {
+        const d = Math.hypot(X(p.x) - xv, Y(p.y) - yv);
+        if (d < bestD) { bestD = d; best = { s, p }; }
+      }
+    }
+    if (!best) return;
+    cross.setAttribute("x1", X(best.p.x)); cross.setAttribute("x2", X(best.p.x));
+    cross.setAttribute("opacity", "1");
+    tip.innerHTML =
+      `<span class="lg-dot" style="display:inline-block;background:${colorVar(best.s.c)};margin-right:6px"></span>
+       <span class="tt-od">${esc(best.s.c.name)}</span>
+       <span class="tt-t"> · OD ${fmtOD(best.p.y)} · ${best.p.x.toFixed(2)} h</span>`;
+    tip.style.left = `${(X(best.p.x) / W) * box.width}px`;
+    tip.style.top  = `${(Y(best.p.y) / H) * box.height - 10}px`;
+    tip.style.opacity = "1";
+  });
+  hit.addEventListener("pointerleave", () => {
+    cross.setAttribute("opacity", "0");
+    tip.style.opacity = "0";
+  });
+}
+
+const trim = (s, n) => s.length > n ? s.slice(0, n - 1) + "…" : s;
+
+/* A section per replicate group, its heading carrying the spread of μ across the
+   group — the scatter the replicates exist to measure. With no groups at all the
+   legend is exactly the flat grid it always was. */
+function legendHTML(all) {
+  const p = P();
+  if (!groupsOf(p).length) return `<div class="lg-grid">${all.map(legendItem).join("")}</div>`;
+
+  const sections = [];
+  for (const g of groupsOf(p)) {
+    const mine = all.filter(s => s.c.groupId === g.id);
+    if (mine.length) sections.push(`<section>
+        <p class="lg-head" title="Growth rate across the replicates in this group">${esc(g.name)}
+          <span class="agg">${groupStatText(groupStats(mine.map(s => s.c)))}</span></p>
+        <div class="lg-grid">${mine.map(legendItem).join("")}</div>
+      </section>`);
+  }
+  const loose = all.filter(s => !s.c.groupId);
+  if (loose.length) sections.push(`<section>${
+    sections.length ? `<p class="lg-head">Ungrouped</p>` : ""
+  }<div class="lg-grid">${loose.map(legendItem).join("")}</div></section>`);
+  return sections.join("");
+}
+
+function legendItem(s) {
+  const c = s.c;
+  const few = s.pts.length < 2;
+  const off = c.hidden || few;
+  const stat = s.fit.ok
+    ? `μ ${s.fit.mu.toFixed(3)} h⁻¹`
+    : (few ? `${s.pts.length} reading${s.pts.length === 1 ? "" : "s"}` : "no fit yet");
+  return `<button class="lg-item ${off ? "off" : ""}"
+            data-lg="${c.id}" ${few ? "disabled" : ""}
+            aria-pressed="${!c.hidden}" title="${esc(c.name)}">
+      ${lineKey(c)}
+      <span class="lg-name">${esc(c.name)}</span>
+      <span class="lg-stat">${stat}</span>
+    </button>`;
+}
+
+function niceStep(range, target) {
+  const raw = range / target;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+  return nice * mag;
+}
+
+/* ============================================================
+   CSV export
+   ============================================================ */
+
+/* ---------- export file names ----------
+   "Glycerol growth curves" exported on 7 Aug 2026
+       -> Glycerol_growth_curves_8_7_2026.csv
+   Spaces become underscores, case is kept, characters a filesystem would
+   object to are dropped. Letters outside ASCII (Δ, µ) are kept.          */
+
+const dateStamp = (d = new Date()) => `${d.getMonth() + 1}_${d.getDate()}_${d.getFullYear()}`;
+
+const nameToken = s => (s || "").trim()
+  // / \ : * ? " < > | + % … become a separator, not nothing — otherwise
+  // "LB\media" would collapse to "LBmedia" and run two words together
+  .replace(/[^\p{L}\p{N}\s._-]/gu, " ")
+  .replace(/\s+/g, "_")
+  .replace(/_{2,}/g, "_")
+  .replace(/^[_.]+|[_.]+$/g, "");
+
+function exportName(...parts) {
+  const tokens = parts.map(nameToken).filter(Boolean);
+  if (!tokens.length) tokens.push("OD_tracker");
+  return `${tokens.join("_")}_${dateStamp()}.csv`;
+}
+const q = s => `"${String(s).replace(/"/g, '""')}"`;
+
+function csvFor(cultures) {
+  const lines = ["culture,replicate_group,replicate_no,elapsed_hours,od600,dilution_factor,ln_od,volume_removed_ml,volume_left_ml,in_fit,reading_note,recorded_at_iso,growth_rate_per_h,doubling_time_h,r_squared,culture_notes"];
+  for (const c of cultures) {
+    const fit = fitGrowth(c);
+    const mu = fit.ok ? fit.mu.toFixed(5) : "";
+    const dt = fit.ok && fit.mu > 0 ? fit.doubling.toFixed(4) : "";
+    const r2 = fit.ok ? fit.r2.toFixed(5) : "";
+    const g = groupOf(c);
+    const gName = q(g ? g.name : "");
+    const gNo   = g && Number.isInteger(c.repNo) ? c.repNo : "";
+    const sorted = [...c.measurements].sort((a, b) => a.t - b.t);
+    if (!sorted.length) {
+      lines.push([q(c.name), gName, gNo, "", "", "", "", "", initialOf(c), "", "", "", mu, dt, r2, q(c.notes)].join(","));
+      continue;
+    }
+    let left = initialOf(c);
+    sorted.forEach((m, i) => lines.push([
+      q(c.name), gName, gNo, (m.t / 3.6e6).toFixed(4), m.od, m.dilution,
+      m.od > 0 ? Math.log(m.od).toFixed(4) : "",
+      drawnOf(m).toFixed(3), (left -= drawnOf(m)).toFixed(3),
+      m.use === false ? "0" : "1",
+      q(m.note || ""),
+      new Date(m.at).toISOString(),
+      mu, dt, r2,
+      i === 0 ? q(c.notes) : ""
+    ].join(",")));
+  }
+  return lines.join("\n");
+}
+
+function downloadCSV(text, filename) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/* ============================================================
+   Header actions + tick loop
+   ============================================================ */
+
+document.getElementById("addBtn").onclick = () => {
+  // volumes follow the culture added before it — one project is one protocol
+  const prev = cultures()[cultures().length - 1];
+  const c = {
+    id: uid(),
+    name: `Culture ${cultures().length + 1}`,
+    notes: "", tab: "data", groupId: null, repNo: null,
+    running: false, startedAt: null, accumMs: 0,   // clock starts only when Start is pressed
+    cuvette:   prev ? cuvetteOn(prev) : VOL_DEFAULTS.cuvette,
+    initialMl: prev ? initialOf(prev) : VOL_DEFAULTS.initialMl,
+    sampleMl:  prev ? sampleOf(prev)  : VOL_DEFAULTS.sampleMl,
+    color: assignColor(cultures()), hidden: false,
+    measurements: []
+  };
+  P().cultures.push(c);
+  save(); renderAll();
+  const input = gridEl.querySelector(`[data-card="${c.id}"] .name`);
+  if (input) { input.focus(); input.select(); }
+};
+
+document.getElementById("exportAll").onclick = () => {
+  if (!cultures().length) return;
+  downloadCSV(csvFor(cultures()), exportName(P() ? P().name : ""));
+};
+
+const themeBtn = document.getElementById("themeBtn");
+const savedTheme = localStorage.getItem(STORE_KEY + ".theme");
+if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+themeBtn.onclick = () => {
+  const dark = document.documentElement.dataset.theme
+    ? document.documentElement.dataset.theme === "dark"
+    : matchMedia("(prefers-color-scheme: dark)").matches;
+  const next = dark ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem(STORE_KEY + ".theme", next);
+  renderAll();   // re-draw SVG marks against the new surface
+};
+
+// only the clock text updates each second — never a full re-render, so typing is never interrupted
+setInterval(() => {
+  for (const c of cultures()) {
+    if (!c.running) continue;
+    const card = gridEl.querySelector(`[data-card="${c.id}"]`);
+    if (!card) continue;
+    const ms = elapsed(c);
+    const t = fmtClock(ms);
+    card.querySelector(".clock-main").textContent = t.main;
+    card.querySelector(".frac").textContent = t.frac;
+
+    // count the "reaches OD" prediction down live. The fit itself only changes
+    // when a reading is added, so the target time is cached on the element at
+    // render and only the remaining time is recomputed here.
+    const reach = card.querySelector("[data-reach]");
+    if (reach) {
+      const tAt = parseFloat(reach.dataset.reachAt);
+      if (isFinite(tAt)) {
+        const remaining = tAt - ms / 3.6e6;
+        const txt = reachText(remaining);
+        if (reach.textContent !== txt) {
+          reach.textContent = txt;
+          const sub = card.querySelector("[data-reach-sub]");
+          if (sub) sub.textContent = reachSub(remaining);
+        }
+      }
+    }
+  }
+}, 250);
+
+// Every mutation already calls save(), and a running stopwatch is reconstructed from
+// startedAt on load — so there is deliberately no beforeunload save here: a second tab
+// holding a stale snapshot would otherwise overwrite newer data when it closed.
+
+// keep multiple open tabs in sync
+addEventListener("storage", e => {
+  if (e.key !== STORE_KEY || !e.newValue) return;
+  try {
+    const incoming = JSON.parse(e.newValue);
+    if (incoming && Array.isArray(incoming.cultures)) { state = incoming; renderAll(); }
+  } catch (err) { /* ignore a malformed write from another tab */ }
+});
+
+renderAll();
+</script>
+</body>
+</html>
