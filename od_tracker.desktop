@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=OD Tracker
+Comment=Opens the OD tracker program
+Exec=chromium-browser /home/pi/OD_tracker/index.html
+Icon=/home/pi/OD_tracker/genesys_30.png
+Terminal=false
+Categories=Utility;
