@@ -131,6 +131,20 @@ main { padding: 20px; max-width: 1500px; margin: 0 auto; }
 }
 @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } main { padding: 14px; } }
 
+/* A fixed number of cards per row, chosen from the header and kept in
+   localStorage. It beats the auto-fill track above (and the narrow-screen
+   fallback) on specificity, because it is an explicit request: three 420px
+   cards never fit an 800x480 Pi panel, so the user asks for three and the
+   cards compact themselves to suit (see "narrow card" at the end of this
+   sheet). minmax(0,1fr) rather than 1fr so a wide table cannot push a
+   column past its share. */
+.grid[data-cols="1"] { grid-template-columns: minmax(0, 1fr); }
+.grid[data-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid[data-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .grid[data-cols="2"], .grid[data-cols="3"] { gap: 10px; }
+}
+
 .empty {
   text-align: center; padding: 80px 20px; color: var(--text-secondary);
 }
@@ -144,6 +158,9 @@ main { padding: 20px; max-width: 1500px; margin: 0 auto; }
   border-radius: 14px;
   box-shadow: var(--shadow);
   overflow: hidden;
+  /* the card sizes its own contents: three-across on a small panel makes it
+     narrow, and the @container rules at the end of this sheet compact it */
+  container-type: inline-size;
 }
 .card-head { padding: 14px 16px 12px; }
 .name-row { display: flex; align-items: center; gap: 8px; }
@@ -595,6 +612,72 @@ dialog { max-height: calc(100dvh - 16px); }
   }
   html.touch #grpList { max-height: 50vh; margin-bottom: 0; }
 }
+
+/* ---------- narrow card ----------
+   Asked for three across on an 800x480 Pi panel, a card is only ~250px wide.
+   These rules key off the card's own width, not the viewport, so the same card
+   stays roomy when three-across on a desktop and compacts wherever it is
+   actually narrow — three-up on the panel, or one-up on a phone. They sit last
+   in the sheet so they beat the equally specific html.touch sizing above. */
+@container (max-width: 320px) {
+  .card-head { padding: 11px 12px 10px; }
+  input.name, html.touch input.name { font-size: 14.5px; }
+  .name-row { gap: 4px; }
+  .grp-row { margin-top: 7px; }
+  .chip, html.touch .chip { font-size: 11.5px; padding: 4px 8px; min-height: 0; }
+  html.touch .chip-x { margin: -4px -6px -4px 0; padding: 5px 7px; font-size: 13px; }
+
+  .clock-row { gap: 8px; margin-top: 7px; }
+  .clock, html.touch .clock { font-size: 25px; }
+  .clock .frac { font-size: 15px; }
+  .state { font-size: 11px; }
+
+  /* Start / Reset / Record wrap to two rows rather than shrink to unreadable —
+     Record is the one that must stay tappable, so it takes the second row */
+  .controls { gap: 6px; margin-top: 9px; }
+  .controls button, html.touch .controls button {
+    font-size: 13px; padding: 8px 6px; min-height: 38px; flex: 1 1 40%;
+  }
+  .controls button[data-act="record"] { flex: 1 1 100%; }
+
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat, button.stat, html.touch .stat { padding: 8px 10px; }
+  .stat .label { font-size: 10px; letter-spacing: .02em; }
+  .stat .value { font-size: 16px; }
+  .stat .value.pending { font-size: 12.5px; }
+  .stat .sub, .badge { font-size: 10.5px; }
+
+  .tabs { padding: 6px 7px 0; }
+  .tab, html.touch .tab { font-size: 12.5px; padding: 8px 9px; min-height: 38px; }
+  .panel { padding: 10px 12px 12px; }
+
+  table, html.touch table { font-size: 12.5px; }
+  th, html.touch th { font-size: 10px; padding: 0 3px 6px; }
+  td, html.touch td { padding: 9px 3px; }
+  /* Reading number and ln OD go: both are derived, and dropping them is what
+     keeps time, OD, dilution and the fit tick on screen without a sideways
+     scroll. Column 1 and 5 hold whether or not the volume column is showing,
+     and the note row is one colspan cell, so it must keep its only td. */
+  thead th:nth-child(1), thead th:nth-child(5),
+  tbody tr:not(.note-row) td:nth-child(1),
+  tbody tr:not(.note-row) td:nth-child(5) { display: none; }
+  /* Volume left goes too, when it is showing at all — the volume tile above
+     already gives the number that matters live. Column 6 is the volume only
+     when it exists; without it that position is the Fit tick, hence :not(.c). */
+  thead th:nth-child(6):not(.c),
+  tbody tr:not(.note-row) td:nth-child(6):not(.c):not(.act) { display: none; }
+  html.touch .row-btn { min-width: 32px; min-height: 34px; font-size: 16px; }
+  html.touch input[type="checkbox"] { width: 22px; height: 22px; }
+  html.touch .cell-edit { padding: 6px 4px; margin: -6px -4px; }
+  html.touch .note-text { font-size: 12.5px; }
+  html.touch textarea.notes { font-size: 14px; min-height: 110px; }
+
+  .tick-label { font-size: 9.5px; }
+  .axis-title { font-size: 10px; }
+  .two-col { grid-template-columns: 1fr; }
+  .hint { font-size: 11.5px; }
+}
+
 </style>
 </head>
 <body>
@@ -610,6 +693,8 @@ dialog { max-height: calc(100dvh - 16px); }
   <button id="startAll" class="ghost" hidden>Start all</button>
   <button id="pauseAll" class="ghost" hidden>Pause all</button>
   <button id="exportAll" class="ghost" hidden>Export CSV</button>
+  <button id="colsBtn" class="icon ghost" title="Cards per row" aria-label="Cards per row" hidden>▦</button>
+  <button id="fsBtn" class="icon ghost" title="Full screen" aria-label="Enter full screen">⛶</button>
   <button id="themeBtn" class="icon ghost" title="Toggle light / dark" aria-label="Toggle light / dark">◐</button>
   <button id="addProjBtn" class="primary">+ New project</button>
   <button id="addBtn" class="primary" hidden>+ New culture</button>
@@ -1259,6 +1344,7 @@ function renderAll() {
   // header adapts to which screen we're on
   document.getElementById("backBtn").hidden     = !inProject;
   document.getElementById("viewsw").hidden      = !inProject;
+  document.getElementById("colsBtn").hidden     = !inProject || view !== "cards";
   document.getElementById("exportAll").hidden   = !inProject;
   startAllBtn.hidden = !inProject;
   pauseAllBtn.hidden = !inProject;
@@ -2570,6 +2656,75 @@ document.getElementById("exportAll").onclick = () => {
   if (!cultures().length) return;
   downloadCSV(csvFor(cultures()), exportName(P() ? P().name : ""));
 };
+
+/* ---------- full screen ---------- */
+/* One button for the whole page. Useful on a desktop, and on the Pi it hides
+   the browser chrome when the kiosk wrapper is not doing it already. */
+const fsBtn = document.getElementById("fsBtn");
+const fsOn = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+function toggleFullscreen() {
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  const exit = document.exitFullscreen || document.webkitExitFullscreen;
+  try {
+    const r = fsOn() ? exit && exit.call(document) : req && req.call(el);
+    if (r && r.catch) r.catch(err => console.warn("Full screen refused:", err));
+  } catch (err) { console.warn("Full screen refused:", err); }
+}
+
+function syncFsBtn() {
+  const on = fsOn();
+  fsBtn.textContent = on ? "⤡" : "⛶";
+  fsBtn.title = on ? "Leave full screen (Esc)" : "Full screen (F)";
+  fsBtn.setAttribute("aria-label", on ? "Leave full screen" : "Enter full screen");
+}
+
+fsBtn.onclick = toggleFullscreen;
+document.addEventListener("fullscreenchange", syncFsBtn);
+document.addEventListener("webkitfullscreenchange", syncFsBtn);
+// no Fullscreen API (an old browser, or a sandboxed frame): don't offer it
+if (!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen)) {
+  fsBtn.hidden = true;
+} else {
+  syncFsBtn();
+}
+
+// F toggles it, but never while typing a name or note, and never over a dialog
+document.addEventListener("keydown", e => {
+  if (e.key !== "f" && e.key !== "F") return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;   // a keypress with nothing focused targets the document, which has no closest()
+  if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+  if (document.querySelector("dialog[open]")) return;
+  e.preventDefault();
+  toggleFullscreen();
+});
+
+/* ---------- cards per row ---------- */
+/* "Auto" is the responsive auto-fill track, which gives one column on the Pi's
+   800px panel. Picking 2 or 3 overrides it and compacts the cards to fit. */
+const COLS_KEY = STORE_KEY + ".cols";
+const COLS_CYCLE = ["auto", "1", "2", "3"];
+const colsBtn = document.getElementById("colsBtn");
+let cols = localStorage.getItem(COLS_KEY) || "auto";
+if (!COLS_CYCLE.includes(cols)) cols = "auto";
+
+function applyCols() {
+  if (cols === "auto") delete gridEl.dataset.cols;
+  else gridEl.dataset.cols = cols;
+  colsBtn.textContent = cols === "auto" ? "▦" : "▦" + cols;
+  const label = cols === "auto" ? "automatic" : cols + " per row";
+  colsBtn.title = `Cards per row: ${label}`;
+  colsBtn.setAttribute("aria-label", `Cards per row: ${label}. Change`);
+}
+
+colsBtn.onclick = () => {
+  cols = COLS_CYCLE[(COLS_CYCLE.indexOf(cols) + 1) % COLS_CYCLE.length];
+  localStorage.setItem(COLS_KEY, cols);
+  applyCols();
+};
+applyCols();
 
 const themeBtn = document.getElementById("themeBtn");
 const savedTheme = localStorage.getItem(STORE_KEY + ".theme");
