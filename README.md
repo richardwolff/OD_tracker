@@ -30,12 +30,3 @@ package. The script warns if it is missing; install it with:
 ```sh
 sudo apt install -y python3-tk
 ```
-
-## Raspberry Pi kiosk
-
-Separate from the launchers above, and independent of them — this one runs the
-tracker full-screen in Chromium at every boot:
-
-```sh
-bash raspberry-pi-setup.sh
-```
