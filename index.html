@@ -365,6 +365,14 @@ textarea.notes::placeholder { color: var(--text-muted); }
 textarea.notes.meta-note { min-height: 96px; }
 html.touch textarea.notes.meta-note { min-height: 110px; }
 
+/* The OD / pH switch. Borrows the header's segmented control, sized down: it is
+   a view control, not a data control, so it sits apart from the chart rather
+   than on it. */
+.plot-sw { margin: 0 0 10px auto; width: max-content; }
+.plot-sw button { font-size: 12px; padding: 5px 10px; }
+html.touch .plot-sw button { min-height: 38px; font-size: 13.5px; padding: 8px 12px; }
+.cmp-head #cmpPlotSw:empty { display: none; }
+
 /* ---------- chart ---------- */
 .chart-wrap { position: relative; }
 svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
@@ -416,6 +424,9 @@ dialog::backdrop { background: rgba(0,0,0,.4); backdrop-filter: blur(2px); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 /* with cuvette mode off there is no second field to pair with */
 .two-col.solo { grid-template-columns: 1fr; }
+/* pH is three characters and the note is a sentence — an even split would waste
+   half the row on a number */
+.rec-tail { display: grid; grid-template-columns: 108px 1fr; gap: 10px; }
 
 /* A number with -/+ buttons. The volume dialog carries no number pad, so on a
    keyboard-less touch panel these buttons are the only way to set a volume. */
@@ -687,18 +698,12 @@ dialog { max-height: calc(100dvh - 16px); }
   table, html.touch table { font-size: 12.5px; }
   th, html.touch th { font-size: 10px; padding: 0 3px 6px; }
   td, html.touch td { padding: 9px 3px; }
-  /* Reading number and ln OD go: both are derived, and dropping them is what
-     keeps time, OD, dilution and the fit tick on screen without a sideways
-     scroll. Column 1 and 5 hold whether or not the volume column is showing,
-     and the note row is one colspan cell, so it must keep its only td. */
-  thead th:nth-child(1), thead th:nth-child(5),
-  tbody tr:not(.note-row) td:nth-child(1),
-  tbody tr:not(.note-row) td:nth-child(5) { display: none; }
-  /* Volume left goes too, when it is showing at all — the volume tile above
-     already gives the number that matters live. Column 6 is the volume only
-     when it exists; without it that position is the Fit tick, hence :not(.c). */
-  thead th:nth-child(6):not(.c),
-  tbody tr:not(.note-row) td:nth-child(6):not(.c):not(.act) { display: none; }
+  /* Reading number and volume left go: the first is the row order and the
+     second is already on the tile above, and dropping them is what keeps time,
+     OD, dilution, pH and the fit tick on screen without a sideways scroll.
+     Marked by class rather than position — which columns exist varies with the
+     culture, and the note row is one colspan cell that must keep its only td. */
+  .col-n, .col-vol { display: none; }
   html.touch .row-btn { min-width: 32px; min-height: 34px; font-size: 16px; }
   html.touch input[type="checkbox"] { width: 22px; height: 22px; }
   html.touch .cell-edit { padding: 6px 4px; margin: -6px -4px; }
@@ -751,6 +756,7 @@ dialog { max-height: calc(100dvh - 16px); }
           <h2 class="cmp-title">All cultures</h2>
           <p class="cmp-sub" id="cmpSub"></p>
         </div>
+        <div id="cmpPlotSw"></div>
         <button id="cmpExport" class="ghost">Export CSV</button>
       </div>
       <div class="chart-wrap">
@@ -796,10 +802,16 @@ dialog { max-height: calc(100dvh - 16px); }
           <div class="help" id="volAfter"></div>
         </div>
       </div>
-      <div class="field">
-        <label for="noteInput">Note <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
-        <input type="text" id="noteInput" autocomplete="off" maxlength="200"
-               placeholder="e.g. post-IPTG, bubbles in cuvette, resuspended">
+      <div class="rec-tail">
+        <div class="field">
+          <label for="phInput">pH <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
+          <input type="number" id="phInput" step="any" min="0" max="14" inputmode="decimal" placeholder="7.0" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="noteInput">Note <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
+          <input type="text" id="noteInput" autocomplete="off" maxlength="200"
+                 placeholder="e.g. post-IPTG, bubbles in cuvette, resuspended">
+        </div>
       </div>
      </div>
     <div id="keypad">
@@ -990,10 +1002,11 @@ dialog { max-height: calc(100dvh - 16px); }
    cultures: [{ id, name, notes, tab, groupId, repNo,
                 running, startedAt, accumMs,
                 cuvette, initialMl, sampleMl, target,
-                measurements: [{ id, t, od, dilution, vol, at, use }] }]
+                measurements: [{ id, t, od, dilution, vol, ph, at, use }] }]
    t = elapsed stopwatch milliseconds at the moment of the reading
    od = final OD (reading x dilution)
    vol = millilitres taken out of the tube for this reading (0 if none)
+   ph = pH at the moment of the reading, or null when it was not measured
    target = the OD this culture is counting down to; null follows the milestones
    ============================================================ */
 
@@ -1180,6 +1193,9 @@ function normaliseCultures(cultures) {
 
     for (const m of c.measurements || []) {
       if (!Number.isFinite(m.vol)) m.vol = c.cuvette ? c.sampleMl : 0;
+      // pH is optional, and "not measured" is a real state — anything that is
+      // not a pH becomes null rather than 0, which would plot as a data point
+      if (!(Number.isFinite(m.ph) && m.ph >= 0 && m.ph <= 14)) m.ph = null;
     }
   }
   return cultures;
@@ -1789,26 +1805,28 @@ function dataHTML(c) {
             <p class="hint">Readings are timestamped with this culture's stopwatch, so the growth rate is independent of wall-clock time.</p>`;
   }
 
-  // the column only earns its width once something has actually been removed
+  // a column only earns its width once there is something in it
   const showVol = c.measurements.some(m => drawnOf(m) > 0);
+  const showPh  = c.measurements.some(m => Number.isFinite(m.ph));
+  const cols    = 6 + (showPh ? 1 : 0) + (showVol ? 1 : 0);
   let left = initialOf(c);      // running total, walked down the readings in time order
 
   const rows = [...c.measurements].sort((a, b) => a.t - b.t).map((m, i) => {
     const off = m.use === false;
     left -= drawnOf(m);
     return `<tr class="${off ? "excluded" : ""}${m.note ? " has-note" : ""}" data-m="${m.id}">
-      <td>${i + 1}</td>
+      <td class="col-n">${i + 1}</td>
       <td>${fmtHours(m.t)}</td>
       <td class="od"><button type="button" class="cell-edit" data-act="edit-m"
             title="Edit this reading" aria-label="Edit reading ${i + 1}, OD ${fmtOD(m.od)}">${fmtOD(m.od)}</button></td>
       <td>${m.dilution > 1 ? `×${m.dilution}` : "—"}</td>
-      <td>${m.od > 0 ? Math.log(m.od).toFixed(3) : "—"}</td>
-      ${showVol ? `<td${left < 0 ? ` style="color:var(--critical)"` : ""}>${fmtMl(left)}</td>` : ""}
+      ${showPh ? `<td class="col-ph">${Number.isFinite(m.ph) ? m.ph.toFixed(2) : "—"}</td>` : ""}
+      ${showVol ? `<td class="col-vol"${left < 0 ? ` style="color:var(--critical)"` : ""}>${fmtMl(left)}</td>` : ""}
       <td class="c"><input type="checkbox" data-act="use" ${off ? "" : "checked"}
             title="Include this point in the growth-rate fit" aria-label="Include reading ${i + 1} in fit"></td>
       <td class="act"><button class="row-btn" data-act="del-m" title="Delete reading" aria-label="Delete reading ${i + 1}">✕</button></td>
     </tr>${m.note ? `<tr class="note-row ${off ? "excluded" : ""}" data-m="${m.id}">
-      <td colspan="${showVol ? 8 : 7}"><button type="button" class="note-text" data-act="edit-m"
+      <td colspan="${cols}"><button type="button" class="note-text" data-act="edit-m"
         title="Edit this reading">${esc(m.note)}</button></td>
     </tr>` : ""}`;
   }).join("");
@@ -1817,8 +1835,9 @@ function dataHTML(c) {
 
   return `<div class="table-wrap"><table>
       <thead><tr>
-        <th>#</th><th>Time (h)</th><th>OD₆₀₀</th><th>Dil.</th><th>ln OD</th>
-        ${showVol ? `<th title="Volume left in the tube after this reading">Vol (mL)</th>` : ""}
+        <th class="col-n">#</th><th>Time (h)</th><th>OD₆₀₀</th><th>Dil.</th>
+        ${showPh ? `<th class="col-ph">pH</th>` : ""}
+        ${showVol ? `<th class="col-vol" title="Volume left in the tube after this reading">Vol (mL)</th>` : ""}
         <th class="c" title="Include in growth-rate fit">Fit</th><th></th>
       </tr></thead>
       <tbody>${rows}</tbody>
@@ -1837,13 +1856,18 @@ function notesHTML(c) {
 }
 
 function curveHTML(c) {
-  const pts = c.measurements.filter(m => m.od > 0);
+  const P = plotFor(c);
+  const sw = hasPh(c) ? plotSwitchHTML(P.key) : "";
+  const pts = seriesOf(c, P);
   if (pts.length < 2) {
-    return `<div class="no-data">The growth curve appears after 2 readings.<br>${pts.length} so far.</div>`;
+    return `${sw}<div class="no-data">The ${P.key === "ph" ? "pH trace" : "growth curve"}
+      appears after 2 readings.<br>${pts.length} so far.</div>`;
   }
-  return `<div class="chart-wrap">
+  return `${sw}<div class="chart-wrap">
       <svg class="chart" data-act="chart" role="img"
-           aria-label="Semi-log growth curve: OD 600 against elapsed hours"></svg>
+           aria-label="${P.key === "ph"
+             ? "pH against elapsed hours"
+             : "Semi-log growth curve: OD 600 against elapsed hours"}"></svg>
       <div class="tooltip" data-tip></div>
     </div>`;
 }
@@ -1918,6 +1942,7 @@ function wireCard(el, c, fit, used) {
 
   const svg = el.querySelector('[data-act="chart"]');
   if (svg) drawChart(svg, el.querySelector("[data-tip]"), c, fit);
+  wirePlotSwitch(el);   // the OD / pH switch above the curve, when the card has one
 }
 
 /* ---------- record dialog ---------- */
@@ -1931,6 +1956,7 @@ const recPair   = document.getElementById("recPair");
 // the dilution field shares its row with the volume field, so it has to know
 const showVolField = show => { volField.hidden = !show; recPair.classList.toggle("solo", !show); };
 const volAfter  = document.getElementById("volAfter");
+const phInput   = document.getElementById("phInput");
 const noteInput = document.getElementById("noteInput");
 const recordErr = document.getElementById("recordErr");
 let recordTarget = null;
@@ -1948,6 +1974,7 @@ function openRecord(c) {
     `${c.name} · t = ${fmtHours(recordAtMs)} h${c.running ? "" : "  (stopwatch not running)"}`;
   odInput.value = "";
   dilInput.value = "";
+  phInput.value = "";
   noteInput.value = "";
   showVolField(cuvetteOn(c));
   volInput.value = cuvetteOn(c) ? String(sampleOf(c)) : "";
@@ -1992,6 +2019,7 @@ function openEditReading(c, m) {
   showVolField(cuvetteOn(c) || drawnOf(m) > 0);
   volInput.value = String(+drawnOf(m).toPrecision(12));
   showVolAfter();
+  phInput.value = Number.isFinite(m.ph) ? String(m.ph) : "";
   noteInput.value = m.note || "";
   recordErr.textContent = "";
   if (TOUCH) setKpField(odInput);
@@ -2021,15 +2049,26 @@ document.getElementById("recordForm").addEventListener("submit", e => {
     volInput.focus(); return;
   }
 
+  /* An empty pH field means the pH was not measured, which is a different fact
+     from "the pH was 0" — it stays null and the reading simply has no pH point. */
+  let ph = null;
+  if (phInput.value.trim() !== "") {
+    ph = parseFloat(phInput.value);
+    if (!isFinite(ph) || ph < 0 || ph > 14) {
+      recordErr.textContent = "pH must be between 0 and 14, or left empty.";
+      phInput.focus(); return;
+    }
+  }
+
   const note = noteInput.value.trim();
 
   if (editingId) {
     const m = recordTarget.measurements.find(x => x.id === editingId);
-    if (m) { m.od = reading * dil; m.dilution = dil; m.note = note; m.vol = drawn; }
+    if (m) { m.od = reading * dil; m.dilution = dil; m.note = note; m.vol = drawn; m.ph = ph; }
   } else {
     recordTarget.measurements.push({
       id: uid(), t: recordAtMs, od: reading * dil,
-      dilution: dil, vol: drawn, at: Date.now(), use: true, note
+      dilution: dil, vol: drawn, ph, at: Date.now(), use: true, note
     });
     if (recordTarget.tab === "notes") recordTarget.tab = "data";
   }
@@ -2067,18 +2106,19 @@ if (TOUCH) {
   // values like "0." — assigning one silently yields "" — so the pad could never
   // build a decimal. Switch to text (inputmode keeps a numeric soft keyboard);
   // the submit handler already parses and validates by hand.
-  for (const el of [odInput, dilInput, volInput]) {
+  for (const el of [odInput, dilInput, volInput, phInput]) {
     el.type = "text";
     el.setAttribute("inputmode", "decimal");
   }
   KP_LABELS.set(odInput, "reading");
   KP_LABELS.set(dilInput, "dilution factor");
   KP_LABELS.set(volInput, "volume removed");
+  KP_LABELS.set(phInput, "pH");
   KP_LABELS.set(noteInput, "note");
   // The note field is included deliberately. If it were left out, focusing the
   // note and then tapping a digit would append it to whichever numeric field was
   // last active — silently corrupting a reading with no visible cause.
-  for (const el of [odInput, dilInput, volInput, noteInput]) {
+  for (const el of [odInput, dilInput, volInput, phInput, noteInput]) {
     el.addEventListener("focus", () => setKpField(el));
     el.addEventListener("click", () => setKpField(el));
   }
@@ -2493,54 +2533,121 @@ document.getElementById("confirmOk").onclick = () => {
 };
 
 /* ============================================================
-   Chart — semi-log OD vs elapsed hours
+   Charts — a value against elapsed hours
    ============================================================ */
 
+/* The two things that can be on the y-axis, and the one difference that matters
+   between them: OD goes on a log axis, because growth is exponential and the
+   straight semi-log line is the whole point, while pH is already a logarithm and
+   belongs on a linear one. Everything else — axis title, tick text, tooltip —
+   follows from the series being drawn. */
+const PLOTS = {
+  od: {
+    key: "od", label: "OD₆₀₀", log: true,
+    valueOf: m => (m.od > 0 ? m.od : null),
+    tick: v => v >= 1 ? String(+v.toFixed(2)) : String(+v.toFixed(3)),
+    tip:  v => `OD ${fmtOD(v)}`
+  },
+  ph: {
+    key: "ph", label: "pH", log: false,
+    valueOf: m => (Number.isFinite(m.ph) ? m.ph : null),
+    tick: v => String(+v.toFixed(2)),
+    tip:  v => `pH ${v.toFixed(2)}`
+  }
+};
+
+/* One toggle for the whole app rather than one per card: switching to pH is a
+   question about the experiment ("what happened to the medium?"), not about one
+   tube, and having to flip eight cards one at a time would be a chore. Not
+   persisted — a session opens on the OD it was built to show. */
+let plotMode = "od";
+
+const hasPh    = c => c.measurements.some(m => Number.isFinite(m.ph));
+const anyPh    = () => cultures().some(hasPh);
+// a card with no pH of its own stays on OD however the toggle is set
+const plotFor  = c => (plotMode === "ph" && hasPh(c) ? PLOTS.ph : PLOTS.od);
+
+const seriesOf = (c, P) => c.measurements
+  .map(m => ({ x: m.t / 3.6e6, y: P.valueOf(m), use: m.use !== false }))
+  .filter(p => p.y !== null)
+  .sort((a, b) => a.x - b.x);
+
+/* The y-axis for one set of values, padded so the extremes are not sitting on
+   the frame. `Y` maps a value to a pixel; `ticks` are the values to label.
+   A log axis ticks at 1/2/5 per decade, subdividing when the range is so narrow
+   that fewer than three would land inside it; a linear axis uses round steps. */
+function yAxis(values, P, top, bottom) {
+  const raw = P.log ? values.map(Math.log10) : values;
+  let lo = Math.min(...raw), hi = Math.max(...raw);
+  // a flat series has no range of its own to pad — give it one
+  if (!(hi > lo)) { const d = Math.max(Math.abs(hi) * 0.05, P.log ? 0.05 : 0.1); lo -= d; hi += d; }
+  const span = Math.max((hi - lo) * 0.12, P.log ? 0.08 : 0.05);
+  lo -= span; hi += span;
+
+  const pos = v => top + (1 - (v - lo) / (hi - lo)) * (bottom - top);
+  const Y = v => pos(P.log ? Math.log10(v) : v);
+
+  let ticks = [];
+  if (P.log) {
+    for (let d = Math.floor(lo); d <= Math.ceil(hi); d++)
+      for (const m of [1, 2, 5]) {
+        const v = m * 10 ** d, L = Math.log10(v);
+        if (L >= lo && L <= hi) ticks.push(v);
+      }
+    if (ticks.length < 3) {
+      ticks = [];
+      for (let d = Math.floor(lo); d <= Math.ceil(hi); d++)
+        for (let m = 1; m <= 9; m++) {
+          const v = m * 10 ** d, L = Math.log10(v);
+          if (L >= lo && L <= hi) ticks.push(v);
+        }
+    }
+  } else {
+    const step = niceStep(hi - lo, 5);
+    for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(6));
+  }
+  return { Y, ticks, lo, hi, pos };
+}
+
+/* The segmented OD / pH switch. Only drawn where there is a pH to switch to —
+   an experiment that never measured one never sees it. */
+const plotSwitchHTML = active => `<div class="viewsw plot-sw" role="tablist" aria-label="Plotted value">
+    <button type="button" role="tab" data-plot="od" aria-selected="${active === "od"}">OD₆₀₀</button>
+    <button type="button" role="tab" data-plot="ph" aria-selected="${active === "ph"}">pH</button>
+  </div>`;
+
+function wirePlotSwitch(root) {
+  root.querySelectorAll("[data-plot]").forEach(b => {
+    b.onclick = () => {
+      if (plotMode === b.dataset.plot) return;
+      plotMode = b.dataset.plot;
+      renderAll();
+    };
+  });
+}
+
 function drawChart(svg, tip, c, fit) {
+  const P = plotFor(c);
   const W = 460, H = 240;
   const pad = { t: 12, r: 14, b: 34, l: 46 };
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("preserveAspectRatio", "none");
   svg.style.aspectRatio = `${W} / ${H}`;
 
-  const pts = c.measurements.filter(m => m.od > 0)
-    .map(m => ({ x: m.t / 3.6e6, y: m.od, use: m.use !== false }))
-    .sort((a, b) => a.x - b.x);
+  const pts = seriesOf(c, P);
 
   // ----- scales -----
   const xMax = Math.max(...pts.map(p => p.x));
   const xHi = xMax > 0 ? xMax * 1.04 : 1;
   const X = v => pad.l + (v / xHi) * (W - pad.l - pad.r);
 
-  const logs = pts.map(p => Math.log10(p.y));
-  let lo = Math.min(...logs), hi = Math.max(...logs);
-  const spanPad = Math.max((hi - lo) * 0.12, 0.08);
-  lo -= spanPad; hi += spanPad;
-  const Y = v => pad.t + (1 - (Math.log10(v) - lo) / (hi - lo)) * (H - pad.t - pad.b);
-
-  // ----- ticks -----
-  const yTicks = [];
-  for (let d = Math.floor(lo); d <= Math.ceil(hi); d++) {
-    for (const m of [1, 2, 5]) {
-      const v = m * 10 ** d;
-      const L = Math.log10(v);
-      if (L >= lo && L <= hi) yTicks.push(v);
-    }
-  }
-  if (yTicks.length < 3) {                     // narrow range — subdivide further
-    yTicks.length = 0;
-    for (let d = Math.floor(lo); d <= Math.ceil(hi); d++)
-      for (let m = 1; m <= 9; m++) {
-        const v = m * 10 ** d, L = Math.log10(v);
-        if (L >= lo && L <= hi) yTicks.push(v);
-      }
-  }
+  const { Y, ticks: yTicks, lo, hi, pos } = yAxis(pts.map(p => p.y), P, pad.t, H - pad.b);
 
   const step = niceStep(xHi, 6);
   const xTicks = [];
   for (let v = 0; v <= xHi + 1e-9; v += step) xTicks.push(+v.toFixed(6));
 
-  const tickText = v => v >= 1 ? String(+v.toFixed(2)) : String(+v.toFixed(3));
+  const tickText = P.tick;
   let g = "";
 
   // gridlines + axes
@@ -2556,7 +2663,7 @@ function drawChart(svg, tip, c, fit) {
   g += `<line class="axisline" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${H - pad.b}"/>
         <line class="axisline" x1="${pad.l}" y1="${H - pad.b}" x2="${W - pad.r}" y2="${H - pad.b}"/>
         <text class="axis-title" x="${(pad.l + W - pad.r) / 2}" y="${H - 3}" text-anchor="middle">Elapsed time (h)</text>
-        <text class="axis-title" x="${-(pad.t + H - pad.b) / 2}" y="11" text-anchor="middle" transform="rotate(-90)">OD₆₀₀</text>`;
+        <text class="axis-title" x="${-(pad.t + H - pad.b) / 2}" y="11" text-anchor="middle" transform="rotate(-90)">${P.label}</text>`;
 
   // Fitted line (annotation — dashed, muted, never mistaken for the data).
   //
@@ -2566,8 +2673,8 @@ function drawChart(svg, tip, c, fit) {
   // range (routine once lag-phase points are unticked). That made it look as
   // though the culture started at OD 0, and worse, it changed the drawn slope,
   // so the dashed line no longer represented the fitted growth rate.
-  if (fit.ok && isFinite(fit.mu)) {
-    const Ylog   = v => pad.t + (1 - (v - lo) / (hi - lo)) * (H - pad.t - pad.b);
+  if (P.log && fit.ok && isFinite(fit.mu)) {
+    const Ylog   = pos;                                            // already log10 space
     const logAt  = x => (fit.intercept + fit.mu * x) / Math.LN10;   // log10 OD at time x
     let x1 = 0, x2 = xHi, draw = true;
 
@@ -2612,7 +2719,7 @@ function drawChart(svg, tip, c, fit) {
     }
     cross.setAttribute("x1", X(near.x)); cross.setAttribute("x2", X(near.x));
     cross.setAttribute("opacity", "1");
-    tip.innerHTML = `<span class="tt-od">OD ${fmtOD(near.y)}</span>
+    tip.innerHTML = `<span class="tt-od">${P.tip(near.y)}</span>
                      <span class="tt-t"> · ${near.x.toFixed(2)} h</span>
                      ${near.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
     tip.style.left = `${(X(near.x) / W) * box.width}px`;
@@ -2638,14 +2745,9 @@ function drawOverlay() {
   const sub    = document.getElementById("cmpSub");
   const hint   = document.getElementById("cmpHint");
 
-  // a culture can be drawn as soon as it has 2+ positive readings
-  const all = cultures().map(c => ({
-    c,
-    fit: fitGrowth(c),
-    pts: c.measurements.filter(m => m.od > 0)
-           .map(m => ({ x: m.t / 3.6e6, y: m.od, use: m.use !== false }))
-           .sort((a, b) => a.x - b.x)
-  }));
+  // a culture can be drawn as soon as it has 2+ points of whatever is plotted
+  const P = plotMode === "ph" && anyPh() ? PLOTS.ph : PLOTS.od;
+  const all = cultures().map(c => ({ c, fit: fitGrowth(c), pts: seriesOf(c, P) }));
   const drawable = all.filter(s => s.pts.length >= 2);
   const shown    = drawable.filter(s => !s.c.hidden);
 
@@ -2659,13 +2761,19 @@ function drawOverlay() {
     };
   });
 
+  // the switch belongs to the card head, beside the title, and only exists at all
+  // once some reading somewhere in the project carries a pH
+  const sw = document.getElementById("cmpPlotSw");
+  sw.innerHTML = anyPh() ? plotSwitchHTML(P.key) : "";
+  wirePlotSwitch(sw);
+
   const thin = all.length - drawable.length;
   sub.textContent = shown.length
     ? `${shown.length} of ${all.length} plotted`
     : "";
   hint.textContent = [
     "Tap a culture in the legend to hide or show it.",
-    thin ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs 2+ readings).` : ""
+    thin ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs 2+ ${P.key === "ph" ? "pH " : ""}readings).` : ""
   ].filter(Boolean).join(" ");
 
   if (!shown.length) {
@@ -2685,33 +2793,13 @@ function drawOverlay() {
   const xHi = xMax > 0 ? xMax * 1.04 : 1;
   const X = v => pad.l + (v / xHi) * (W - pad.l - pad.r);
 
-  const logs = shown.flatMap(s => s.pts.map(p => Math.log10(p.y)));
-  let lo = Math.min(...logs), hi = Math.max(...logs);
-  const spanPad = Math.max((hi - lo) * 0.12, 0.08);
-  lo -= spanPad; hi += spanPad;
-  const Y = v => pad.t + (1 - (Math.log10(v) - lo) / (hi - lo)) * (H - pad.t - pad.b);
-
-  // log ticks at 1/2/5 per decade, subdividing when the range is narrow
-  let yTicks = [];
-  for (let d = Math.floor(lo); d <= Math.ceil(hi); d++)
-    for (const m of [1, 2, 5]) {
-      const v = m * 10 ** d, L = Math.log10(v);
-      if (L >= lo && L <= hi) yTicks.push(v);
-    }
-  if (yTicks.length < 3) {
-    yTicks = [];
-    for (let d = Math.floor(lo); d <= Math.ceil(hi); d++)
-      for (let m = 1; m <= 9; m++) {
-        const v = m * 10 ** d, L = Math.log10(v);
-        if (L >= lo && L <= hi) yTicks.push(v);
-      }
-  }
+  const { Y, ticks: yTicks } = yAxis(shown.flatMap(s => s.pts.map(p => p.y)), P, pad.t, H - pad.b);
 
   const step = niceStep(xHi, 7);
   const xTicks = [];
   for (let v = 0; v <= xHi + 1e-9; v += step) xTicks.push(+v.toFixed(6));
 
-  const tickText = v => v >= 1 ? String(+v.toFixed(2)) : String(+v.toFixed(3));
+  const tickText = P.tick;
   let g = "";
   for (const v of yTicks) {
     const y = Y(v).toFixed(1);
@@ -2723,7 +2811,7 @@ function drawOverlay() {
   g += `<line class="axisline" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${H - pad.b}"/>
         <line class="axisline" x1="${pad.l}" y1="${H - pad.b}" x2="${W - pad.r}" y2="${H - pad.b}"/>
         <text class="axis-title" x="${(pad.l + W - pad.r) / 2}" y="${H - 5}" text-anchor="middle">Elapsed time (h)</text>
-        <text class="axis-title" x="${-(pad.t + H - pad.b) / 2}" y="13" text-anchor="middle" transform="rotate(-90)">OD₆₀₀</text>`;
+        <text class="axis-title" x="${-(pad.t + H - pad.b) / 2}" y="13" text-anchor="middle" transform="rotate(-90)">${P.label}</text>`;
 
   for (const s of shown) {
     const col = colorVar(s.c);
@@ -2793,7 +2881,7 @@ function drawOverlay() {
     tip.innerHTML =
       `<span class="lg-dot" style="display:inline-block;background:${colorVar(best.s.c)};margin-right:6px"></span>
        <span class="tt-od">${esc(best.s.c.name)}</span>
-       <span class="tt-t"> · OD ${fmtOD(best.p.y)} · ${best.p.x.toFixed(2)} h</span>`;
+       <span class="tt-t"> · ${P.tip(best.p.y)} · ${best.p.x.toFixed(2)} h</span>`;
     tip.style.left = `${(X(best.p.x) / W) * box.width}px`;
     tip.style.top  = `${(Y(best.p.y) / H) * box.height - 10}px`;
     tip.style.opacity = "1";
@@ -2881,7 +2969,7 @@ function exportName(...parts) {
 const q = s => `"${String(s).replace(/"/g, '""')}"`;
 
 function csvFor(cultures) {
-  const lines = ["culture,replicate_group,replicate_no,elapsed_hours,od600,dilution_factor,ln_od,volume_removed_ml,volume_left_ml,in_fit,reading_note,recorded_at_iso,growth_rate_per_h,doubling_time_h,r_squared,culture_notes"];
+  const lines = ["culture,replicate_group,replicate_no,elapsed_hours,od600,dilution_factor,ln_od,ph,volume_removed_ml,volume_left_ml,in_fit,reading_note,recorded_at_iso,growth_rate_per_h,doubling_time_h,r_squared,culture_notes"];
   for (const c of cultures) {
     const fit = fitGrowth(c);
     const mu = fit.ok ? fit.mu.toFixed(5) : "";
@@ -2892,13 +2980,14 @@ function csvFor(cultures) {
     const gNo   = g && Number.isInteger(c.repNo) ? c.repNo : "";
     const sorted = [...c.measurements].sort((a, b) => a.t - b.t);
     if (!sorted.length) {
-      lines.push([q(c.name), gName, gNo, "", "", "", "", "", initialOf(c), "", "", "", mu, dt, r2, q(c.notes)].join(","));
+      lines.push([q(c.name), gName, gNo, "", "", "", "", "", "", initialOf(c), "", "", "", mu, dt, r2, q(c.notes)].join(","));
       continue;
     }
     let left = initialOf(c);
     sorted.forEach((m, i) => lines.push([
       q(c.name), gName, gNo, (m.t / 3.6e6).toFixed(4), m.od, m.dilution,
       m.od > 0 ? Math.log(m.od).toFixed(4) : "",
+      Number.isFinite(m.ph) ? m.ph : "",
       drawnOf(m).toFixed(3), (left -= drawnOf(m)).toFixed(3),
       m.use === false ? "0" : "1",
       q(m.note || ""),
