@@ -1,8 +1,15 @@
+# Generated copy — install-launchers.sh fills in the real folder path.
+# Run install-launchers.sh rather than editing this file by hand.
 [Desktop Entry]
 Type=Application
+Version=1.0
 Name=OD Tracker
-Comment=Opens the OD tracker program
-Exec=open /home/YOUR_DIR_HERE/OD_tracker/index.html
-Icon=/home/YOUR_DIR_HERE/OD_tracker/genesys_30.png
+GenericName=Bacterial growth tracker
+Comment=Record OD600 readings and follow culture growth curves
+Exec=xdg-open "__DIR__/index.html"
+Path=__DIR__
+Icon=__DIR__/genesys_30.png
 Terminal=false
-Categories=Utility;
+Categories=Science;Biology;Education;
+Keywords=od;od600;growth;culture;bacteria;lab;
+StartupNotify=false

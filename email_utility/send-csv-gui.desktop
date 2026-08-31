@@ -1,12 +1,13 @@
-# Generated copy — install.sh fills in the real folder path.
-# Run ./install.sh rather than copying this file by hand.
+# Generated copy — the installer fills in the real folder path.
+# Run ../install-launchers.sh (both apps) or ./install.sh (this one alone)
+# rather than editing this file by hand.
 [Desktop Entry]
 Type=Application
 Version=1.0
 Name=Send CSV by Email
 GenericName=Email a file
 Comment=Attach a CSV (or any file), write a subject and message, and send it
-Exec=python3 __DIR__/send_csv_gui.py %f
+Exec=python3 "__DIR__/send_csv_gui.py" %f
 Path=__DIR__
 Icon=__DIR__/send_csv_gui.svg
 Terminal=false
