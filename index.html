@@ -2620,8 +2620,33 @@ function csvFor(cultures) {
   return lines.join("\n");
 }
 
-function downloadCSV(text, filename) {
-  const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+/* Ask where to put the file when the browser can (Chrome/Edge, and Chromium on
+   the Pi) — the picker opens in the folder used last, remembered under the "id".
+   Firefox/Safari have no picker, so they keep the plain download. Must be
+   called straight out of a click: the picker needs the user gesture.        */
+async function downloadCSV(text, filename) {
+  const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        id: "od-tracker-csv",
+        startIn: "downloads",
+        types: [{ description: "CSV file", accept: { "text/csv": [".csv"] } }]
+      });
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+      return;
+    } catch (err) {
+      if (err && err.name === "AbortError") return;   // user cancelled — not an error
+      // anything else (no permission, sandboxed iframe, insecure context):
+      // fall through to the plain download rather than losing the export
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
