@@ -381,6 +381,15 @@ svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
 .tick-label { fill: var(--text-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .axis-title { fill: var(--text-secondary); font-size: 11px; font-weight: 600; }
 .dataline { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+/* Compare view, only while "Highlight fitted" is on: the fitted stretch of a
+   curve is the part the growth rate is a claim about, so it is drawn heavier,
+   and everything dropped from the fit steps back rather than disappearing — an
+   excluded point is still a reading that was taken, and hiding it would
+   misrepresent the run. With the toggle off these rules do not apply and every
+   point is drawn alike, so the classes can stay on the elements either way. */
+.hl-fit .dataline.in-fit  { stroke-width: 3.2; }
+.hl-fit .dataline.off-fit { stroke-width: 1.6; opacity: .38; }
+.hl-fit .pt.off-fit { opacity: .35; stroke-width: 1.5; }
 .fitline { fill: none; stroke: var(--text-muted); stroke-width: 2; stroke-dasharray: 5 4; stroke-linecap: round; }
 .pt { fill: var(--series-1); stroke: var(--surface); stroke-width: 2; }
 .pt.off { fill: var(--text-muted); }
@@ -618,6 +627,12 @@ html.touch .od-presets button { min-height: 46px; font-size: 15px; }
 .grp-list { display: grid; gap: 6px; margin-bottom: 14px; max-height: 34vh; overflow-y: auto; }
 .grp-opt { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 9px 11px; }
 .grp-opt[aria-pressed="true"] { border-color: var(--series-1); box-shadow: inset 0 0 0 1px var(--series-1); }
+
+/* A ghost button that stays pressed in while its effect is on screen */
+.toggle-btn[aria-pressed="true"] {
+  color: var(--text-primary); border-color: var(--series-1);
+  box-shadow: inset 0 0 0 1px var(--series-1);
+}
 .grp-opt .grp-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .grp-opt .n { margin-left: auto; color: var(--text-muted); font-weight: 500; flex: none; }
 .grp-del {
@@ -731,7 +746,8 @@ dialog { max-height: calc(100dvh - 16px); }
   <div class="spacer"></div>
   <button id="startAll" class="ghost" hidden>Start all</button>
   <button id="pauseAll" class="ghost" hidden>Pause all</button>
-  <button id="exportAll" class="ghost" hidden>Export CSV</button>
+  <button id="exportAll" class="ghost" hidden
+          title="Download the readings and the metadata report together, as a zip">Export project</button>
   <button id="colsBtn" class="icon ghost" title="Cards per row" aria-label="Cards per row" hidden>▦</button>
   <button id="fsBtn" class="icon ghost" title="Full screen" aria-label="Enter full screen">⛶</button>
   <button id="themeBtn" class="icon ghost" title="Toggle light / dark" aria-label="Toggle light / dark">◐</button>
@@ -757,7 +773,8 @@ dialog { max-height: calc(100dvh - 16px); }
           <p class="cmp-sub" id="cmpSub"></p>
         </div>
         <div id="cmpPlotSw"></div>
-        <button id="cmpExport" class="ghost">Export CSV</button>
+        <button id="cmpFitBtn" class="ghost toggle-btn" aria-pressed="false"
+                title="Draw the readings behind each growth rate heavier, and fade the ones dropped from the fit">Highlight fitted</button>
       </div>
       <div class="chart-wrap">
         <svg class="chart" id="cmpChart" role="img"
@@ -1002,8 +1019,11 @@ dialog { max-height: calc(100dvh - 16px); }
    cultures: [{ id, name, notes, tab, groupId, repNo,
                 running, startedAt, accumMs,
                 cuvette, initialMl, sampleMl, target,
-                measurements: [{ id, t, od, dilution, vol, ph, at, use }] }]
-   t = elapsed stopwatch milliseconds at the moment of the reading
+                measurements: [{ id, t, tPress, od, dilution, vol, ph, at, use }] }]
+   t = elapsed stopwatch milliseconds when the reading was SAVED — the same
+       instant as `at`, so the plotted time and recorded_at_iso always agree
+   tPress = elapsed milliseconds when Record OD was pressed. Kept for the CSV
+       only: the gap between it and t is how long the reading sat in the dialog
    od = final OD (reading x dilution)
    vol = millilitres taken out of the tube for this reading (0 if none)
    ph = pH at the moment of the reading, or null when it was not measured
@@ -1196,6 +1216,13 @@ function normaliseCultures(cultures) {
       // pH is optional, and "not measured" is a real state — anything that is
       // not a pH becomes null rather than 0, which would plot as a data point
       if (!(Number.isFinite(m.ph) && m.ph >= 0 && m.ph <= 14)) m.ph = null;
+
+      /* Readings saved when `t` was the press time. The two were the same
+         number then, so tPress takes it — and `t` is deliberately left alone.
+         The save-time elapsed for an old reading is not recoverable, and
+         inventing one would move points on a curve that has already been read
+         and reported. Old readings keep the time they were plotted at. */
+      if (!Number.isFinite(m.tPress)) m.tPress = m.t;
     }
   }
   return cultures;
@@ -1262,8 +1289,8 @@ const byId = id => cultures().find(c => c.id === id);
 
 /* ---------- stopwatch ---------- */
 
-function elapsed(c) {
-  return c.accumMs + (c.running ? Date.now() - c.startedAt : 0);
+function elapsed(c, now = Date.now()) {
+  return c.accumMs + (c.running ? now - c.startedAt : 0);
 }
 
 function toggleTimer(c) {
@@ -1615,8 +1642,16 @@ document.querySelectorAll(".viewsw button").forEach(b => {
   b.onclick = () => setView(b.dataset.view);
 });
 document.getElementById("backBtn").onclick = closeProject;
-document.getElementById("cmpExport").onclick = () =>
-  downloadCSV(csvFor(cultures()), exportName(P() ? P().name : ""));
+/* Off by default: the plain curve is the honest first read of the data, and the
+   emphasis is something you turn on when the question is "which points is this
+   growth rate actually resting on?". Not persisted, like the OD / pH switch. */
+let highlightFit = false;
+
+document.getElementById("cmpFitBtn").onclick = e => {
+  highlightFit = !highlightFit;
+  e.currentTarget.setAttribute("aria-pressed", String(highlightFit));
+  drawOverlay();
+};
 
 function renderCard(id) {
   const c = byId(id);
@@ -1960,18 +1995,17 @@ const phInput   = document.getElementById("phInput");
 const noteInput = document.getElementById("noteInput");
 const recordErr = document.getElementById("recordErr");
 let recordTarget = null;
-let recordAtMs = 0;
+let pressAtMs = 0;      // elapsed when Record OD was pressed; kept for the CSV
 
 let editingId = null;        // null = recording a new reading, otherwise editing that one
 
 function openRecord(c) {
   recordTarget = c;
   editingId = null;
-  recordAtMs = elapsed(c);                     // freeze the time at the moment of the click
+  pressAtMs = elapsed(c);                      // for the CSV; the stored time is taken on save
   document.getElementById("recordTitle").innerHTML = "Record OD<sub>600</sub>";
   document.getElementById("recordOk").textContent = "Record";
-  document.getElementById("recordSub").textContent =
-    `${c.name} · t = ${fmtHours(recordAtMs)} h${c.running ? "" : "  (stopwatch not running)"}`;
+  document.getElementById("recordSub").textContent = recordSubText(c);
   odInput.value = "";
   dilInput.value = "";
   phInput.value = "";
@@ -1984,6 +2018,14 @@ function openRecord(c) {
   recordDlg.showModal();
   odInput.focus();
 }
+
+/* The reading is filed at the time it is SAVED, not the time the dialog opened,
+   so this has to be the live stopwatch — a frozen number would name a time the
+   reading is not going to get. The tick loop refreshes it while the dialog is
+   open. Editing says something different and static: the time already on the
+   reading, which an edit never moves. */
+const recordSubText = c =>
+  `${c.name} · t = ${fmtHours(elapsed(c))} h${c.running ? "" : "  (stopwatch not running)"}`;
 
 /* Live "5.00 mL → 4.80 mL left" under the volume field. When editing, the
    reading's own sample is added back first — otherwise correcting it would
@@ -2007,7 +2049,7 @@ volInput.addEventListener("input", showVolAfter);
 function openEditReading(c, m) {
   recordTarget = c;
   editingId = m.id;
-  recordAtMs = m.t;                            // keep the time it was taken at
+  // an edit never moves a reading along the x-axis: t, tPress and at all stand
   const dil = m.dilution > 0 ? m.dilution : 1;
   document.getElementById("recordTitle").innerHTML = "Edit reading";
   document.getElementById("recordOk").textContent = "Save";
@@ -2066,9 +2108,12 @@ document.getElementById("recordForm").addEventListener("submit", e => {
     const m = recordTarget.measurements.find(x => x.id === editingId);
     if (m) { m.od = reading * dil; m.dilution = dil; m.note = note; m.vol = drawn; m.ph = ph; }
   } else {
+    // One `now` for the stopwatch reading and the wall clock, so the plotted
+    // time and recorded_at_iso are the same instant by construction.
+    const now = Date.now();
     recordTarget.measurements.push({
-      id: uid(), t: recordAtMs, od: reading * dil,
-      dilution: dil, vol: drawn, ph, at: Date.now(), use: true, note
+      id: uid(), t: elapsed(recordTarget, now), tPress: pressAtMs, od: reading * dil,
+      dilution: dil, vol: drawn, ph, at: now, use: true, note
     });
     if (recordTarget.tab === "notes") recordTarget.tab = "data";
   }
@@ -2464,8 +2509,8 @@ let projEditing = null;      // null = creating
 function showProjPreview() {
   const n = projNameIn.value.trim();
   projPreview.textContent = n
-    ? `Exports as ${exportName(n)}`
-    : "Exports as <project name>_<today's date>.csv";
+    ? `Exports as ${exportNameAs("zip", n)}`
+    : "Exports as <project name>_<today's date>.zip";
 }
 projNameIn.addEventListener("input", () => { showProjPreview(); projErr.textContent = ""; });
 
@@ -2788,6 +2833,7 @@ function drawOverlay() {
   const pad = { t: 14, r: 18, b: 40, l: 56 };
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.style.aspectRatio = `${W} / ${H}`;
+  svg.classList.toggle("hl-fit", highlightFit);
 
   const xMax = Math.max(...shown.flatMap(s => s.pts.map(p => p.x)));
   const xHi = xMax > 0 ? xMax * 1.04 : 1;
@@ -2813,13 +2859,30 @@ function drawOverlay() {
         <text class="axis-title" x="${(pad.l + W - pad.r) / 2}" y="${H - 5}" text-anchor="middle">Elapsed time (h)</text>
         <text class="axis-title" x="${-(pad.t + H - pad.b) / 2}" y="13" text-anchor="middle" transform="rotate(-90)">${P.label}</text>`;
 
+  /* The line is drawn as two paths rather than one: a segment counts as fitted
+     only when BOTH of its endpoints are in the fit, so the heavy stroke never
+     runs into or out of an excluded reading and claim more than the fit does.
+     Faded first, solid over it, so the thick stroke owns the crossings. */
   for (const s of shown) {
-    const col = colorVar(s.c);
+    const col  = colorVar(s.c);
     const dash = dashOf(s.c);
-    const d = s.pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(" ");
-    g += `<path class="dataline" style="stroke:${col}${dash ? `;stroke-dasharray:${dash}` : ""}" d="${d}"/>`;
+    const at   = p => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`;
+
+    const seg = { in: [], off: [] };
+    for (let i = 1; i < s.pts.length; i++) {
+      const a = s.pts[i - 1], b = s.pts[i];
+      seg[a.use && b.use ? "in" : "off"].push(`M${at(a)}L${at(b)}`);
+    }
+
+    const stroke = `stroke:${col}${dash ? `;stroke-dasharray:${dash}` : ""}`;
+    for (const kind of ["off", "in"]) {
+      if (seg[kind].length)
+        g += `<path class="dataline ${kind}-fit" style="${stroke}" d="${seg[kind].join(" ")}"/>`;
+    }
+
     for (const p of s.pts)
-      g += `<circle class="pt" style="fill:${col}" cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="4"/>`;
+      g += `<circle class="pt ${p.use ? "" : "off-fit"}" style="fill:${col}"
+              cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="4"/>`;
   }
 
   // Direct labels only while they stay legible; past four, converging lines make
@@ -2881,7 +2944,8 @@ function drawOverlay() {
     tip.innerHTML =
       `<span class="lg-dot" style="display:inline-block;background:${colorVar(best.s.c)};margin-right:6px"></span>
        <span class="tt-od">${esc(best.s.c.name)}</span>
-       <span class="tt-t"> · ${P.tip(best.p.y)} · ${best.p.x.toFixed(2)} h</span>`;
+       <span class="tt-t"> · ${P.tip(best.p.y)} · ${best.p.x.toFixed(2)} h</span>
+       ${best.p.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
     tip.style.left = `${(X(best.p.x) / W) * box.width}px`;
     tip.style.top  = `${(Y(best.p.y) / H) * box.height - 10}px`;
     tip.style.opacity = "1";
@@ -2945,6 +3009,230 @@ function niceStep(range, target) {
    CSV export
    ============================================================ */
 
+/* ============================================================
+   Metadata report — the companion to the data CSV.
+
+   The CSV is for a plotting script; this is for the lab book and the email
+   that goes with it. It answers "what was this experiment, when was it run,
+   what was written down, and what did each culture do" in one page of plain
+   text, so it stays readable in a mail client, a terminal or a printout with
+   nothing installed.
+   ============================================================ */
+
+const RULE  = "=".repeat(66);
+const RULE2 = "-".repeat(66);
+
+const fmtDate     = ms => new Date(ms).toLocaleDateString(undefined,
+  { day: "numeric", month: "short", year: "numeric" });
+const fmtDateTime = ms => new Date(ms).toLocaleString(undefined,
+  { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+const fmtTime     = ms => new Date(ms).toLocaleTimeString(undefined,
+  { hour: "2-digit", minute: "2-digit" });
+
+/* A run inside one day reads better as "7 Aug, 09:12 to 18:40" than as the date
+   twice. The time is formatted on its own rather than sliced out of the full
+   string — locales do not all separate the date from the time with ", ". */
+const fmtWindow = w => fmtDate(w.first) === fmtDate(w.last)
+  ? `${fmtDate(w.first)}, ${fmtTime(w.first)} to ${fmtTime(w.last)}`
+  : `${fmtDateTime(w.first)} to ${fmtDateTime(w.last)}`;
+
+/* Notes are free text and routinely run to several lines, so they are indented
+   as a block rather than squeezed onto the label line. An empty note says so
+   out loud — a silently missing section reads like the report lost it. */
+function noteBlock(text, indent) {
+  const pad = " ".repeat(indent);
+  const body = String(text || "").trim();
+  if (!body) return `${pad}(none)`;
+  return body.split("\n").map(line => pad + line).join("\n");
+}
+
+// wall-clock span of the readings actually taken, which is when the work happened
+function runWindow(ms) {
+  const times = ms.map(m => m.at).filter(Number.isFinite);
+  if (!times.length) return null;
+  return { first: Math.min(...times), last: Math.max(...times) };
+}
+
+function cultureBlock(c, indent) {
+  const pad = " ".repeat(indent);
+  const fit = fitGrowth(c);
+  const win = runWindow(c.measurements);
+  const inFit = c.measurements.filter(m => m.use !== false && m.od > 0).length;
+  const L = [];
+
+  L.push(`${pad}${c.name}`);
+  L.push(`${pad}  Growth rate    ${fit.ok
+    ? `mu ${fit.mu.toFixed(4)} /h · doubling ${fit.mu > 0 ? fmtDuration(fit.doubling) : "—"}`
+      + ` · R2 ${fit.r2.toFixed(4)} (${r2Badge(fit.r2).text})`
+    : `no growth rate yet — ${fit.n} of the ${MIN_FIT_POINTS} readings needed are in the fit`}`);
+  L.push(`${pad}  Readings       ${c.measurements.length} recorded, ${inFit} in the fit`);
+  if (win) {
+    L.push(`${pad}  First reading  ${fmtDateTime(win.first)}`);
+    L.push(`${pad}  Last reading   ${fmtDateTime(win.last)}`);
+  }
+  const ph = c.measurements.filter(m => Number.isFinite(m.ph));
+  if (ph.length) L.push(`${pad}  pH             ${ph.length} reading${ph.length === 1 ? "" : "s"}`
+    + ` · ${Math.min(...ph.map(m => m.ph)).toFixed(2)} to ${Math.max(...ph.map(m => m.ph)).toFixed(2)}`);
+  L.push(`${pad}  Notes`);
+  L.push(noteBlock(c.notes, indent + 4));
+  return L.join("\n");
+}
+
+function metadataReport(p) {
+  const cs = p.cultures;
+  const groups = groupsOf(p);
+  const readings = cs.reduce((n, c) => n + c.measurements.length, 0);
+  const win = runWindow(cs.flatMap(c => c.measurements));
+  const L = [];
+
+  L.push(RULE);
+  L.push("OD Tracker — experiment metadata");
+  L.push(RULE);
+  L.push(`Project          ${p.name}`);
+  if (p.createdAt) L.push(`Project created  ${fmtDate(p.createdAt)}`);
+  // "when was this experiment performed" is the readings, not the project record
+  L.push(`Experiment run   ${win ? fmtWindow(win) : "no readings recorded"}`);
+  L.push(`Cultures         ${cs.length}` + (groups.length
+    ? ` in ${groups.length} replicate group${groups.length === 1 ? "" : "s"}` : ""));
+  L.push(`Readings         ${readings}`);
+  L.push(`Exported         ${fmtDateTime(Date.now())}`);
+  L.push("");
+
+  L.push(RULE2);
+  L.push("PROJECT NOTES");
+  L.push(RULE2);
+  L.push(noteBlock(p.notes, 2));
+  L.push("");
+
+  if (groups.length) {
+    L.push(RULE2);
+    L.push("REPLICATE GROUPS");
+    L.push(RULE2);
+    for (const g of groups) {
+      const members = membersOf(p, g.id);
+      const st = groupStats(members);
+      L.push(`${g.name}  (${members.length} replicate${members.length === 1 ? "" : "s"})`);
+      /* The spread across replicates is the number the group exists to produce.
+         n is the count of replicates that actually fitted, which is not always
+         the number of tubes — saying otherwise would overstate the result. */
+      L.push(`  Mean growth rate  ${!st ? "no fit yet"
+        : st.sd === null
+          ? `mu ${st.mean.toFixed(4)} /h (n = 1, no spread from a single fit)`
+          : `mu ${st.mean.toFixed(4)} +/- ${st.sd.toFixed(4)} /h (n = ${st.n} fitted)`}`);
+      if (st && st.mean > 0)
+        L.push(`  Mean doubling     ${fmtDuration(Math.LN2 / st.mean)} (from the mean rate)`);
+      L.push("  Group notes");
+      L.push(noteBlock(g.notes, 4));
+      L.push("");
+      for (const c of members) { L.push(cultureBlock(c, 2)); L.push(""); }
+    }
+  }
+
+  const loose = cs.filter(c => !c.groupId);
+  if (loose.length) {
+    L.push(RULE2);
+    L.push(groups.length ? "CULTURES NOT IN A GROUP" : "CULTURES");
+    L.push(RULE2);
+    for (const c of loose) { L.push(cultureBlock(c, 0)); L.push(""); }
+  }
+
+  if (!cs.length) { L.push(RULE2); L.push("No cultures in this project yet."); L.push(""); }
+
+  L.push(RULE2);
+  L.push("mu is the specific growth rate from a least-squares fit of ln(OD600)");
+  L.push("against elapsed hours, over the readings ticked into the fit only.");
+  L.push("Reading-level data is in the companion CSV export.");
+  L.push(RULE2);
+  return L.join("\n") + "\n";
+}
+
+/* ============================================================
+   ZIP — the data and its metadata, kept together
+
+   Entries are STORED, not deflated. This app has no build step and no
+   dependencies, and one run is two small text files: the archive exists to
+   stop the readings and the notes that explain them from being separated, not
+   to make them smaller. Names go in as UTF-8 with the language-encoding flag
+   set, because nameToken deliberately keeps letters like Δ and µ.
+   ============================================================ */
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function zipBlob(files, when = new Date()) {
+  const enc = new TextEncoder();
+  // DOS timestamps: two-second resolution, and the epoch is 1980
+  const dosTime = (when.getHours() << 11) | (when.getMinutes() << 5) | (when.getSeconds() >> 1);
+  const dosDate = ((when.getFullYear() - 1980) << 9) | ((when.getMonth() + 1) << 5) | when.getDate();
+
+  const entries = files.map(f => {
+    const name = enc.encode(f.name);
+    const data = enc.encode(f.text);
+    return { name, data, crc: crc32(data), offset: 0 };
+  });
+
+  const localBytes = entries.reduce((n, e) => n + 30 + e.name.length + e.data.length, 0);
+  const cdBytes    = entries.reduce((n, e) => n + 46 + e.name.length, 0);
+  const out  = new Uint8Array(localBytes + cdBytes + 22);
+  const view = new DataView(out.buffer);
+  let at = 0;
+  const u16 = v => { view.setUint16(at, v, true); at += 2; };
+  const u32 = v => { view.setUint32(at, v, true); at += 4; };
+  const raw = b => { out.set(b, at); at += b.length; };
+
+  for (const e of entries) {                       // local file headers + data
+    e.offset = at;
+    u32(0x04034b50); u16(20); u16(0x0800); u16(0);
+    u16(dosTime); u16(dosDate);
+    u32(e.crc); u32(e.data.length); u32(e.data.length);
+    u16(e.name.length); u16(0);
+    raw(e.name); raw(e.data);
+  }
+
+  const cdStart = at;
+  for (const e of entries) {                       // central directory
+    u32(0x02014b50); u16(20); u16(20); u16(0x0800); u16(0);
+    u16(dosTime); u16(dosDate);
+    u32(e.crc); u32(e.data.length); u32(e.data.length);
+    u16(e.name.length); u16(0); u16(0);
+    u16(0); u16(0); u32(0);
+    u32(e.offset);
+    raw(e.name);
+  }
+
+  // Sizes are taken BEFORE the trailer is written: `at` is the live write
+  // pointer, so reading it mid-record would count the trailer's own bytes.
+  const cdEnd = at;
+  u32(0x06054b50); u16(0); u16(0);                 // end of central directory
+  u16(entries.length); u16(entries.length);
+  u32(cdEnd - cdStart); u32(cdStart); u16(0);
+
+  return new Blob([out], { type: "application/zip" });
+}
+
+/* Everything one run produces, under one name: the reading-level CSV a script
+   would read, and the metadata report a person would. */
+function projectZip(p) {
+  const stem = exportNameAs("", p.name).replace(/\.$/, "");
+  return zipBlob([
+    { name: `${stem}.csv`,          text: csvFor(p.cultures) },
+    { name: `${stem}_metadata.txt`, text: metadataReport(p) }
+  ]);
+}
+
 /* ---------- export file names ----------
    "Glycerol growth curves" exported on 7 Aug 2026
        -> Glycerol_growth_curves_8_7_2026.csv
@@ -2961,15 +3249,16 @@ const nameToken = s => (s || "").trim()
   .replace(/_{2,}/g, "_")
   .replace(/^[_.]+|[_.]+$/g, "");
 
-function exportName(...parts) {
+function exportNameAs(ext, ...parts) {
   const tokens = parts.map(nameToken).filter(Boolean);
   if (!tokens.length) tokens.push("OD_tracker");
-  return `${tokens.join("_")}_${dateStamp()}.csv`;
+  return `${tokens.join("_")}_${dateStamp()}.${ext}`;
 }
+const exportName = (...parts) => exportNameAs("csv", ...parts);
 const q = s => `"${String(s).replace(/"/g, '""')}"`;
 
 function csvFor(cultures) {
-  const lines = ["culture,replicate_group,replicate_no,elapsed_hours,od600,dilution_factor,ln_od,ph,volume_removed_ml,volume_left_ml,in_fit,reading_note,recorded_at_iso,growth_rate_per_h,doubling_time_h,r_squared,culture_notes"];
+  const lines = ["culture,replicate_group,replicate_no,elapsed_hours,pressed_elapsed_hours,od600,dilution_factor,ln_od,ph,volume_removed_ml,volume_left_ml,in_fit,reading_note,recorded_at_iso,growth_rate_per_h,doubling_time_h,r_squared,culture_notes"];
   for (const c of cultures) {
     const fit = fitGrowth(c);
     const mu = fit.ok ? fit.mu.toFixed(5) : "";
@@ -2980,12 +3269,13 @@ function csvFor(cultures) {
     const gNo   = g && Number.isInteger(c.repNo) ? c.repNo : "";
     const sorted = [...c.measurements].sort((a, b) => a.t - b.t);
     if (!sorted.length) {
-      lines.push([q(c.name), gName, gNo, "", "", "", "", "", "", initialOf(c), "", "", "", mu, dt, r2, q(c.notes)].join(","));
+      lines.push([q(c.name), gName, gNo, "", "", "", "", "", "", "", initialOf(c), "", "", "", mu, dt, r2, q(c.notes)].join(","));
       continue;
     }
     let left = initialOf(c);
     sorted.forEach((m, i) => lines.push([
-      q(c.name), gName, gNo, (m.t / 3.6e6).toFixed(4), m.od, m.dilution,
+      q(c.name), gName, gNo, (m.t / 3.6e6).toFixed(4), (m.tPress / 3.6e6).toFixed(4),
+      m.od, m.dilution,
       m.od > 0 ? Math.log(m.od).toFixed(4) : "",
       Number.isFinite(m.ph) ? m.ph : "",
       drawnOf(m).toFixed(3), (left -= drawnOf(m)).toFixed(3),
@@ -3002,17 +3292,19 @@ function csvFor(cultures) {
 /* Ask where to put the file when the browser can (Chrome/Edge, and Chromium on
    the Pi) — the picker opens in the folder used last, remembered under the "id".
    Firefox/Safari have no picker, so they keep the plain download. Must be
-   called straight out of a click: the picker needs the user gesture.        */
-async function downloadCSV(text, filename) {
-  const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+   called straight out of a click: the picker needs the user gesture.
 
+   Both exports share one picker id on purpose: the data and the metadata for a
+   run belong in the same folder, so the second save should open where the first
+   one went.                                                                  */
+async function downloadBlob(blob, filename, ext, typeLabel) {
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({
         suggestedName: filename,
         id: "od-tracker-csv",
         startIn: "downloads",
-        types: [{ description: "CSV file", accept: { "text/csv": [".csv"] } }]
+        types: [{ description: typeLabel, accept: { [blob.type.split(";")[0]]: [ext] } }]
       });
       const w = await handle.createWritable();
       await w.write(blob);
@@ -3031,6 +3323,10 @@ async function downloadCSV(text, filename) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+const downloadCSV = (text, name) =>
+  downloadBlob(new Blob([text], { type: "text/csv;charset=utf-8" }), name, ".csv", "CSV file");
+const downloadZip = (blob, name) => downloadBlob(blob, name, ".zip", "ZIP archive");
 
 /* ============================================================
    Header actions + tick loop
@@ -3058,8 +3354,8 @@ document.getElementById("addBtn").onclick = () => {
 };
 
 document.getElementById("exportAll").onclick = () => {
-  if (!cultures().length) return;
-  downloadCSV(csvFor(cultures()), exportName(P() ? P().name : ""));
+  if (!P()) return;
+  downloadZip(projectZip(P()), exportNameAs("zip", P().name));
 };
 
 /* ---------- full screen ---------- */
@@ -3146,6 +3442,11 @@ themeBtn.onclick = () => {
 
 // only the clock text updates each second — never a full re-render, so typing is never interrupted
 setInterval(() => {
+  // the Record dialog names the time the reading will be filed at, so it counts up too
+  if (recordDlg.open && !editingId && recordTarget && recordTarget.running) {
+    document.getElementById("recordSub").textContent = recordSubText(recordTarget);
+  }
+
   for (const c of cultures()) {
     if (!c.running) continue;
     const card = gridEl.querySelector(`[data-card="${c.id}"]`);
