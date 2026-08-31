@@ -345,6 +345,26 @@ textarea.notes {
 textarea.notes:focus { outline: none; border-color: var(--series-1); }
 textarea.notes::placeholder { color: var(--text-muted); }
 
+/* ---------- metadata view ---------- */
+.meta-stack { display: grid; gap: 14px; }
+.meta-groups { display: grid; gap: 16px; }
+/* One note per group, side by side when there is room — a project with six
+   groups should not be six screens of scrolling. */
+@media (min-width: 900px) {
+  .meta-groups { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+}
+.meta-grp-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0 0 7px;
+}
+.meta-grp-name { font-size: 14px; font-weight: 650; color: var(--text-primary); }
+.meta-grp-sub {
+  font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
+/* Group notes are annotations, not a lab book page — a shorter box so several
+   of them stay on screen together. Still drag-resizable. */
+textarea.notes.meta-note { min-height: 96px; }
+html.touch textarea.notes.meta-note { min-height: 110px; }
+
 /* ---------- chart ---------- */
 .chart-wrap { position: relative; }
 svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
@@ -455,6 +475,8 @@ html.touch dialog { width: min(460px, calc(100vw - 24px)); }
   html.touch .dlg-body { padding: 14px 16px; }
   html.touch .field { margin-bottom: 9px; }
   html.touch .kp-grid button { min-height: 44px; font-size: 18px; }
+  html.touch .od-presets button { min-height: 38px; font-size: 14px; }
+  html.touch .od-presets { gap: 5px; margin-bottom: 10px; }
 }
 
 /* ---------- project cards ---------- */
@@ -569,6 +591,17 @@ html.touch #keypad { display: block; margin: 4px 0 2px; }
   font-size: 11.5px; font-weight: 600; color: var(--text-muted);
   text-transform: uppercase; letter-spacing: .04em; margin: 0 0 7px;
 }
+
+/* ---------- target OD picker ---------- */
+.od-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.od-presets button {
+  flex: 1 1 auto; min-width: 60px; padding: 9px 8px;
+  font-variant-numeric: tabular-nums;
+}
+.od-presets button[aria-pressed="true"] {
+  border-color: var(--series-1); box-shadow: inset 0 0 0 1px var(--series-1);
+}
+html.touch .od-presets button { min-height: 46px; font-size: 15px; }
 
 /* ---------- replicate group picker ---------- */
 .grp-list { display: grid; gap: 6px; margin-bottom: 14px; max-height: 34vh; overflow-y: auto; }
@@ -688,6 +721,7 @@ dialog { max-height: calc(100dvh - 16px); }
   <div class="viewsw" role="tablist" aria-label="View" id="viewsw" hidden>
     <button role="tab" data-view="cards" aria-selected="true">Cultures</button>
     <button role="tab" data-view="compare" aria-selected="false">Compare</button>
+    <button role="tab" data-view="meta" aria-selected="false">Metadata</button>
   </div>
   <div class="spacer"></div>
   <button id="startAll" class="ghost" hidden>Start all</button>
@@ -728,6 +762,9 @@ dialog { max-height: calc(100dvh - 16px); }
       <p class="hint" id="cmpHint"></p>
     </div>
   </section>
+
+  <!-- project metadata: one note for the project, one per replicate group -->
+  <section id="meta" hidden></section>
 
   <div id="empty" class="empty" hidden>
     <h2>No cultures yet</h2>
@@ -867,6 +904,46 @@ dialog { max-height: calc(100dvh - 16px); }
   </form>
 </dialog>
 
+<!-- target OD -->
+<dialog id="odDlg">
+  <form method="dialog" class="dlg-body" id="odForm">
+    <p class="dlg-title">Target OD<sub>600</sub></p>
+    <p class="dlg-sub" id="odSub"></p>
+
+    <div class="od-presets" id="odPresets"></div>
+
+    <div class="field" id="odField">
+      <label for="odTargetIn">Or any other OD<sub>600</sub></label>
+      <div class="stepper">
+        <button type="button" data-for="odTargetIn" data-step="-0.05" aria-label="Lower target">−</button>
+        <input type="number" id="odTargetIn" step="any" min="0" inputmode="decimal" placeholder="0.4">
+        <button type="button" data-for="odTargetIn" data-step="0.05" aria-label="Higher target">+</button>
+      </div>
+      <div class="help" id="odHelp"></div>
+    </div>
+
+    <label class="check-row">
+      <input type="checkbox" id="odAuto">
+      <span>Follow the milestones automatically
+        <span class="sub">Counts down to whichever of 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 2.0, 4.0 comes next after the latest reading.</span>
+      </span>
+    </label>
+
+    <label class="check-row">
+      <input type="checkbox" id="odAll">
+      <span>Apply to every culture in this project
+        <span class="sub">Each culture keeps its own estimate — only the OD being aimed at is shared.</span>
+      </span>
+    </label>
+
+    <div class="err" id="odErr"></div>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="odCancel">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- new / rename project -->
 <dialog id="projDlg">
   <form method="dialog" class="dlg-body" id="projForm">
@@ -902,18 +979,22 @@ dialog { max-height: calc(100dvh - 16px); }
 
 /* ============================================================
    Model
-   projects: [{ id, name, createdAt, cultures, groups: [{ id, name }] }]
+   projects: [{ id, name, createdAt, notes, cultures, groups: [{ id, name, notes }] }]
+   p.notes is the project's own metadata — media, strain background, incubator,
+   who ran it — and g.notes says the same for one set of replicates. Both live
+   in the Metadata view, beside Cultures and Compare.
    A group holds technical replicates of one culture. c.groupId names the group
    and c.repNo is this culture's number inside it, so a group "Pyruvate" holds
    the cultures named Pyruvate 1, Pyruvate 2, …
 
    cultures: [{ id, name, notes, tab, groupId, repNo,
                 running, startedAt, accumMs,
-                cuvette, initialMl, sampleMl,
+                cuvette, initialMl, sampleMl, target,
                 measurements: [{ id, t, od, dilution, vol, at, use }] }]
    t = elapsed stopwatch milliseconds at the moment of the reading
    od = final OD (reading x dilution)
    vol = millilitres taken out of the tube for this reading (0 if none)
+   target = the OD this culture is counting down to; null follows the milestones
    ============================================================ */
 
 const STORE_KEY = "od-tracker.v2";      // v2 groups cultures into projects
@@ -1044,6 +1125,7 @@ function normaliseGroups(p) {
   p.groups = p.groups.filter(g => {
     if (!g || typeof g.id !== "string" || live.has(g.id)) return false;
     if (typeof g.name !== "string" || !g.name.trim()) g.name = "Replicates";
+    if (typeof g.notes !== "string") g.notes = "";   // saved before group notes existed
     delete g.kind;                     // there is only one kind of group now
     live.set(g.id, g);
     return true;
@@ -1092,6 +1174,10 @@ function normaliseCultures(cultures) {
     if (typeof c.cuvette !== "boolean")    c.cuvette   = VOL_DEFAULTS.cuvette;
     if (!Number.isFinite(c.initialMl))     c.initialMl = VOL_DEFAULTS.initialMl;
     if (!Number.isFinite(c.sampleMl))      c.sampleMl  = VOL_DEFAULTS.sampleMl;
+    // null is a real value here — "follow the milestones" — so anything that
+    // isn't a usable OD becomes null rather than a default number
+    if (!(Number.isFinite(c.target) && c.target > 0)) c.target = null;
+
     for (const m of c.measurements || []) {
       if (!Number.isFinite(m.vol)) m.vol = c.cuvette ? c.sampleMl : 0;
     }
@@ -1107,6 +1193,7 @@ function load() {
       if (parsed && Array.isArray(parsed.projects)) {
         for (const p of parsed.projects) {
           if (!Array.isArray(p.cultures)) p.cultures = [];
+          if (typeof p.notes !== "string") p.notes = "";   // saved before project notes existed
           normaliseCultures(p.cultures);
           normaliseGroups(p);
         }
@@ -1120,7 +1207,7 @@ function load() {
       if (old && Array.isArray(old.cultures) && old.cultures.length) {
         const migrated = {
           projects: [{
-            id: uid(), name: "My cultures", createdAt: Date.now(), groups: [],
+            id: uid(), name: "My cultures", createdAt: Date.now(), notes: "", groups: [],
             cultures: normaliseCultures(old.cultures)
           }]
         };
@@ -1324,6 +1411,7 @@ let view = "cards";
 const projEl      = document.getElementById("projects");
 const projEmptyEl = document.getElementById("projEmpty");
 const compareEl   = document.getElementById("compare");
+const metaEl      = document.getElementById("meta");
 const startAllBtn = document.getElementById("startAll");
 const pauseAllBtn = document.getElementById("pauseAll");
 
@@ -1365,6 +1453,7 @@ function renderAll() {
     projEmptyEl.hidden = !none;
     gridEl.hidden = true;
     compareEl.hidden = true;
+    metaEl.hidden = true;
     emptyEl.hidden = true;
     return;
   }
@@ -1374,15 +1463,81 @@ function renderAll() {
   gridEl.innerHTML = "";
   for (const c of cultures()) gridEl.appendChild(buildCard(c));
   const none = cultures().length === 0;
-  emptyEl.hidden = !none;
+  // Metadata stands on its own: notes are worth writing before the first culture
+  // exists, so the "no cultures yet" panel steps aside for it.
+  emptyEl.hidden = !none || view === "meta";
   gridEl.hidden = none || view !== "cards";
   compareEl.hidden = none || view !== "compare";
+  metaEl.hidden = view !== "meta";
   if (!none && view === "compare") drawOverlay();
+  if (view === "meta") renderMeta();
+}
+
+/* ---------- metadata view ----------
+   One note for the project and one for each replicate group, saved as they are
+   typed. The DOM is rebuilt only when the project or its groups change, never on
+   every renderAll — renderAll runs whenever a reading lands, and a rebuild
+   mid-sentence would take the caret with it.                                  */
+
+let metaShown = null;   // signature of the project currently laid out
+
+const metaSig = p => [p.id, groupsOf(p).length,
+  ...groupsOf(p).map(g => `${g.id}:${g.name}:${membersOf(p, g.id).length}`)].join("|");
+
+function renderMeta() {
+  const p = P();
+  if (!p) { metaShown = null; metaEl.innerHTML = ""; return; }
+  const sig = metaSig(p);
+  if (sig === metaShown) return;
+  metaShown = sig;
+
+  const groups = groupsOf(p);
+  metaEl.innerHTML = `
+    <div class="meta-stack">
+      <div class="cmp-card">
+        <div class="cmp-head"><div>
+          <h2 class="cmp-title">Project notes</h2>
+        </div></div>
+        <textarea class="notes" data-proj-notes spellcheck="true"
+          placeholder="Experiment and question, date, media and supplements, strain background, incubator temperature and shaking speed, spectrophotometer, who ran it…">${esc(p.notes || "")}</textarea>
+      </div>
+
+      <div class="cmp-card">
+        <div class="cmp-head"><div>
+          <h2 class="cmp-title">Replicate groups</h2>
+        </div></div>
+        ${!groups.length ? `<p class="no-data">No groups yet. Group a culture with its
+          replicates from its card, and the group gets a note here.</p>` : ""}
+        ${groups.length ? `<div class="meta-groups">${groups.map(g => {
+          const n = membersOf(p, g.id).length;
+          return `<div class="meta-group">
+            <div class="meta-grp-head">
+              <span class="meta-grp-name">${esc(g.name)}</span>
+              <span class="meta-grp-sub">${n} replicate${n === 1 ? "" : "s"}</span>
+            </div>
+            <textarea class="notes meta-note" data-grp-notes="${g.id}" spellcheck="true"
+              placeholder="Condition, carbon source, inducer and concentration, anything done to this set alone…">${esc(g.notes || "")}</textarea>
+          </div>`;
+        }).join("")}</div>` : ""}
+      </div>
+
+      <p class="hint">Saved automatically.</p>
+    </div>`;
+
+  const proj = metaEl.querySelector("[data-proj-notes]");
+  proj.oninput = () => { p.notes = proj.value; save(); };
+  metaEl.querySelectorAll("[data-grp-notes]").forEach(t => {
+    t.oninput = () => {
+      const g = groupById(p, t.dataset.grpNotes);
+      if (g) { g.notes = t.value; save(); }
+    };
+  });
 }
 
 function openProject(id) {
   openId = id;
   view = "cards";
+  metaShown = null;
   document.querySelectorAll(".viewsw button").forEach(b =>
     b.setAttribute("aria-selected", String(b.dataset.view === "cards")));
   renderAll();
@@ -1531,15 +1686,12 @@ function statsHTML(fit, c) {
           : "needs spread in time"}</div>
         <div class="sub">${fit.n} of ${MIN_FIT_POINTS} measurements</div>
       </div>
+      ${targetStatHTML(c, fit)}
       ${volumeStatHTML(c)}
     </div>`;
   }
 
   const b = r2Badge(fit.r2);
-  const last = c.measurements.reduce((a, m) => (a && a.t > m.t ? a : m), null);
-  const target = fit.mu > 0 ? nextTarget(last ? last.od : 0) : null;
-  const tTarget = target ? timeToOD(fit, target) : Infinity;
-  const remaining = target ? tTarget - elapsed(c) / 3.6e6 : Infinity;
 
   return `<div class="stats">
     <div class="stat">
@@ -1552,17 +1704,39 @@ function statsHTML(fit, c) {
       <div class="value">${fit.mu > 0 ? fmtDuration(fit.doubling) : "—"}</div>
       <div class="sub">${fit.mu > 0 ? `from ${fit.n} points` : "no net growth"}</div>
     </div>
-    <div class="stat">
-      <div class="label">${target ? `Reaches OD ${target}` : "Trend"}</div>
-      <div class="value" ${target ? `data-reach data-reach-at="${tTarget}"` : ""}>${
-        target ? reachText(remaining) : "declining"
-      }</div>
-      <div class="sub" ${target ? "data-reach-sub" : ""}>${
-        target ? reachSub(remaining) : "μ ≤ 0"
-      }</div>
-    </div>
+    ${targetStatHTML(c, fit)}
     ${volumeStatHTML(c)}
   </div>`;
+}
+
+/* The target tile in both of its lives: the countdown to an OD once there is a
+   growth rate to extrapolate, and before that, the way in to choosing the OD it
+   will count down to. Only a target that is still ahead gets the data-reach
+   hooks — the tick loop updates those every quarter second, and there is nothing
+   to recount once a target has been passed. */
+function targetStatHTML(c, fit) {
+  const last   = c.measurements.reduce((a, m) => (a && a.t > m.t ? a : m), null);
+  const target = targetOf(c, last ? last.od : 0);
+  const past   = !!(target && last && last.od >= target);
+  const live   = !!target && !past && fit.ok;
+  const tTarget   = live ? timeToOD(fit, target) : Infinity;
+  const remaining = live ? tTarget - elapsed(c) / 3.6e6 : Infinity;
+  const ticking   = live && fit.mu > 0;
+
+  const value = !target  ? "—"
+              : past     ? "reached"
+              : !fit.ok  ? "—"
+              : fit.mu > 0 ? reachText(remaining) : "declining";
+  const sub   = !target  ? "choose one"
+              : past     ? `already past OD ${fmtTarget(target)}`
+              : !fit.ok  ? "needs a growth rate"
+              : fit.mu > 0 ? reachSub(remaining) : "μ ≤ 0";
+
+  return `<button type="button" class="stat" data-act="target" title="Choose the target OD">
+      <div class="label">${target ? `Reaches OD ${fmtTarget(target)}` : "Target OD"}</div>
+      <div class="value" ${ticking ? `data-reach data-reach-at="${tTarget}"` : ""}>${value}</div>
+      <div class="sub" ${ticking ? "data-reach-sub" : ""}>${sub}</div>
+    </button>`;
 }
 
 /* The volume tile doubles as the way in to the volume settings — the only
@@ -1588,11 +1762,26 @@ function volumeStatHTML(c) {
 const reachText = remaining => remaining <= 0 ? "due now" : `~${fmtDuration(remaining)}`;
 const reachSub  = remaining => remaining <= 0 ? "take a reading" : "at current rate";
 
+/* The milestones a culture climbs through when it has not been given a target
+   of its own — they are also the presets in the picker. */
+const OD_MILESTONES = [0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 2.0, 4.0];
+
 // next conventional milestone above the latest reading
 function nextTarget(od) {
-  for (const v of [0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 2.0, 4.0]) if (v > od) return v;
+  for (const v of OD_MILESTONES) if (v > od) return v;
   return null;
 }
+
+/* The OD this culture is counting down to. A chosen target is kept even once it
+   has been passed — the tile then says so, which is the useful thing to know —
+   while the automatic ladder always moves on to the next rung. */
+const targetOf = (c, lastOd) =>
+  Number.isFinite(c.target) && c.target > 0 ? c.target : nextTarget(lastOd);
+
+/* A target is a round number the user chose, so it is written the way they wrote
+   it: "0.4", not the 3-decimal fmtOD above that readings use. toFixed first so
+   0.30000000000000004 never reaches the label. */
+const fmtTarget = v => String(Number(v.toFixed(4)));
 
 function dataHTML(c) {
   if (!c.measurements.length) {
@@ -1667,6 +1856,7 @@ function wireCard(el, c, fit, used) {
   el.querySelector('[data-act="toggle"]').onclick = () => toggleTimer(c);
   el.querySelector('[data-act="record"]').onclick = () => openRecord(c);
   el.querySelector('[data-act="volume"]').onclick = () => openVolume(c);
+  el.querySelector('[data-act="target"]').onclick = () => openTarget(c);
   on('[data-act="group"]', "click", e => {
     // the ✕ sits inside the chip, so it has to claim the click first
     if (e.target.closest("[data-ungroup]")) { leaveGroup(c); return; }
@@ -2023,7 +2213,7 @@ document.getElementById("grpForm").addEventListener("submit", e => {
       grpName.focus(); return;
     }
     if (grpPick === "new") {
-      const g = { id: uid(), name };
+      const g = { id: uid(), name, notes: "" };
       p.groups.push(g);
       joinGroup(p, grpTarget, g);
     } else {
@@ -2081,14 +2271,17 @@ function syncVolFields() {
 }
 volCuvette.addEventListener("change", syncVolFields);
 
-// -/+ on the volume fields: the touch panel has no keyboard and no number pad here
-document.querySelectorAll("#volForm [data-step]").forEach(btn => {
+/* -/+ on a numeric field: the touch panel has no keyboard and no number pad in
+   these dialogs. Shared by the volume and target forms — same gesture, same
+   0.05-friendly rounding, and each form clears its own error line. */
+document.querySelectorAll("#volForm [data-step], #odForm [data-step]").forEach(btn => {
   btn.onclick = () => {
     const input = document.getElementById(btn.dataset.for);
     const cur = parseFloat(input.value);
     const next = (isFinite(cur) ? cur : 0) + parseFloat(btn.dataset.step);
     input.value = String(Math.max(0, Math.round(next * 100) / 100));   // 0.05 steps stay exact
-    volErr.textContent = "";
+    btn.closest("form").querySelector(".err").textContent = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
   };
 });
 
@@ -2122,6 +2315,103 @@ document.getElementById("volForm").addEventListener("submit", e => {
 });
 
 document.getElementById("volCancel").onclick = () => { volTarget = null; volDlg.close(); };
+
+/* ---------- target OD dialog ----------
+   Which OD the card counts down to. The milestones are there as one tap each,
+   the field takes anything else, and the checkbox hands the choice back to the
+   ladder that picks the next milestone on its own. */
+
+const odDlg      = document.getElementById("odDlg");
+const odPresets  = document.getElementById("odPresets");
+const odTargetIn = document.getElementById("odTargetIn");
+const odAuto     = document.getElementById("odAuto");
+const odAll      = document.getElementById("odAll");
+const odErr      = document.getElementById("odErr");
+let odFor = null;
+
+const lastOdOf = c => {
+  const last = c.measurements.reduce((a, m) => (a && a.t > m.t ? a : m), null);
+  return last ? last.od : 0;
+};
+
+odPresets.innerHTML = OD_MILESTONES.map(v =>
+  `<button type="button" data-od="${v}" aria-pressed="false">${fmtTarget(v)}</button>`).join("");
+
+function openTarget(c) {
+  odFor = c;
+  const fit  = fitGrowth(c);
+  const last = c.measurements.reduce((a, m) => (a && a.t > m.t ? a : m), null);
+  const auto = !Number.isFinite(c.target);
+
+  odAuto.checked     = auto;
+  odTargetIn.value   = auto ? "" : fmtTarget(c.target);
+  odAll.checked      = false;
+  odErr.textContent  = "";
+
+  // what the card is working from right now, so the choice is made in context
+  document.getElementById("odSub").textContent = [
+    c.name,
+    last ? `last reading OD ${last.od}` : "no readings yet",
+    fit.ok && fit.mu > 0 ? `μ ${fit.mu.toFixed(3)} h⁻¹` : "no growth rate yet"
+  ].join(" · ");
+
+  syncTargetForm();
+  odDlg.showModal();
+}
+
+/* Nothing here is ever disabled. Under "follow the milestones" the presets and
+   the field are how you leave it — a disabled control swallows the tap that was
+   meant to turn automatic off, so the first press would appear to do nothing. */
+function syncTargetForm() {
+  const auto = odAuto.checked;
+  const v = parseFloat(odTargetIn.value);
+  const next = odFor ? nextTarget(lastOdOf(odFor)) : null;
+
+  odPresets.querySelectorAll("[data-od]").forEach(b =>
+    b.setAttribute("aria-pressed", String(!auto && parseFloat(b.dataset.od) === v)));
+
+  // under automatic the field is empty, and its placeholder shows what the
+  // ladder is currently aiming at
+  odTargetIn.placeholder = next ? fmtTarget(next) : "0.4";
+
+  document.getElementById("odHelp").textContent = auto
+    ? (next ? `Following the milestones: OD ${fmtTarget(next)} from here. Tap one above, or type an OD, to fix it instead.`
+            : "Past the last milestone — pick a target to keep a countdown.")
+    : "Estimated from the fitted growth rate, so it needs a fit before it shows a time.";
+}
+
+odPresets.addEventListener("click", e => {
+  const btn = e.target.closest("[data-od]");
+  if (!btn) return;
+  odAuto.checked = false;
+  odTargetIn.value = btn.dataset.od;
+  odErr.textContent = "";
+  syncTargetForm();
+});
+odTargetIn.addEventListener("input", () => { odErr.textContent = ""; syncTargetForm(); });
+odAuto.addEventListener("change", syncTargetForm);
+
+document.getElementById("odForm").addEventListener("submit", e => {
+  e.preventDefault();
+  if (!odFor) return odDlg.close();
+
+  let target = null;
+  if (!odAuto.checked) {
+    target = parseFloat(odTargetIn.value);
+    if (!isFinite(target) || target <= 0) {
+      odErr.textContent = "Pick a milestone, type an OD above 0, or follow the milestones.";
+      odTargetIn.focus(); return;
+    }
+  }
+
+  for (const c of (odAll.checked ? cultures() : [odFor])) c.target = target;
+  odFor = null;
+  save();
+  renderAll();
+  odDlg.close();
+});
+
+document.getElementById("odCancel").onclick = () => { odFor = null; odDlg.close(); };
 
 /* ---------- new / rename project ---------- */
 
@@ -2165,7 +2455,7 @@ document.getElementById("projForm").addEventListener("submit", e => {
   if (projEditing) {
     projEditing.name = name;
   } else {
-    const p = { id: uid(), name, createdAt: Date.now(), cultures: [], groups: [] };
+    const p = { id: uid(), name, createdAt: Date.now(), notes: "", cultures: [], groups: [] };
     state.projects.unshift(p);
     save();
     projDlg.close();
@@ -2665,6 +2955,7 @@ document.getElementById("addBtn").onclick = () => {
     name: `Culture ${cultures().length + 1}`,
     notes: "", tab: "data", groupId: null, repNo: null,
     running: false, startedAt: null, accumMs: 0,   // clock starts only when Start is pressed
+    target:    prev ? prev.target : null,   // one project, one thing being aimed at
     cuvette:   prev ? cuvetteOn(prev) : VOL_DEFAULTS.cuvette,
     initialMl: prev ? initialOf(prev) : VOL_DEFAULTS.initialMl,
     sampleMl:  prev ? sampleOf(prev)  : VOL_DEFAULTS.sampleMl,
