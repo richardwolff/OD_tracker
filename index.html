@@ -371,7 +371,16 @@ html.touch textarea.notes.meta-note { min-height: 110px; }
 .plot-sw { margin: 0 0 10px auto; width: max-content; }
 .plot-sw button { font-size: 12px; padding: 5px 10px; }
 html.touch .plot-sw button { min-height: 38px; font-size: 13.5px; padding: 8px 12px; }
-.cmp-head #cmpPlotSw:empty { display: none; }
+
+/* The compare view's axes are chosen from the chart itself: tapping an axis
+   title raises this toggle bar beside it, and it goes away once a choice is
+   made or the tap lands anywhere else. */
+.axis-pop {
+  position: absolute; z-index: 5; padding: 4px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: var(--shadow);
+}
+.axis-pop .plot-sw { margin: 0; }
 
 /* ---------- chart ---------- */
 .chart-wrap { position: relative; }
@@ -380,6 +389,12 @@ svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
 .axisline { stroke: var(--axis); stroke-width: 1; }
 .tick-label { fill: var(--text-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .axis-title { fill: var(--text-secondary); font-size: 11px; font-weight: 600; }
+/* A compare-chart axis title that can be tapped to change what the axis shows.
+   The caret is the only hint it is a control; the hover colour confirms it. */
+.axis-pick { cursor: pointer; }
+.axis-pick .axis-title { fill: var(--text-primary); }
+.axis-pick .caret { fill: var(--text-muted); font-size: 13.5px; }
+.axis-pick:hover .axis-title, .axis-pick:hover .caret { fill: var(--series-1); }
 .dataline { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 /* Compare view, only while "Highlight fitted" is on: the fitted stretch of a
    curve is the part the growth rate is a claim about, so it is drawn heavier,
@@ -622,6 +637,12 @@ html.touch #keypad { display: block; margin: 4px 0 2px; }
   border-color: var(--series-1); box-shadow: inset 0 0 0 1px var(--series-1);
 }
 html.touch .od-presets button { min-height: 46px; font-size: 15px; }
+.od-presets .none { flex: 1 1 100%; font-size: 12.5px; color: var(--text-muted); padding: 6px 2px; }
+/* The word buttons beside a stepper: sized like the −/+ but not shouting like them */
+.stepper .od-add, .stepper .od-reset { font-size: 13px; font-weight: 500; padding: 0 12px; }
+.od-list-head { display: flex; justify-content: flex-end; margin: -6px 0 6px; }
+.od-list-head button { font-size: 12.5px; padding: 5px 8px; }
+.od-list-head button[aria-expanded="true"] { color: var(--text-primary); }
 
 /* ---------- replicate group picker ---------- */
 .grp-list { display: grid; gap: 6px; margin-bottom: 14px; max-height: 34vh; overflow-y: auto; }
@@ -772,14 +793,13 @@ dialog { max-height: calc(100dvh - 16px); }
           <h2 class="cmp-title">All cultures</h2>
           <p class="cmp-sub" id="cmpSub"></p>
         </div>
-        <div id="cmpPlotSw"></div>
         <button id="cmpFitBtn" class="ghost toggle-btn" aria-pressed="false"
                 title="Draw the readings behind each growth rate heavier, and fade the ones dropped from the fit">Highlight fitted</button>
       </div>
       <div class="chart-wrap">
-        <svg class="chart" id="cmpChart" role="img"
-             aria-label="Growth curves for all cultures: OD 600 against elapsed hours, log scale"></svg>
+        <svg class="chart" id="cmpChart" role="img" aria-label="All cultures on one chart"></svg>
         <div class="tooltip" id="cmpTip"></div>
+        <div class="axis-pop" id="axisPop" hidden></div>
       </div>
       <div id="cmpLegend" class="legend"></div>
       <p class="hint" id="cmpHint"></p>
@@ -947,14 +967,27 @@ dialog { max-height: calc(100dvh - 16px); }
         <button type="button" data-for="odTargetIn" data-step="-0.05" aria-label="Lower target">−</button>
         <input type="number" id="odTargetIn" step="any" min="0" inputmode="decimal" placeholder="0.4">
         <button type="button" data-for="odTargetIn" data-step="0.05" aria-label="Higher target">+</button>
+        <button type="button" class="od-add" id="odAddList" title="Add this OD to the list above">Add to list</button>
       </div>
       <div class="help" id="odHelp"></div>
+    </div>
+
+    <div class="od-list-head">
+      <button type="button" class="ghost" id="odListToggle" aria-expanded="false" aria-controls="odListField">Edit the list…</button>
+    </div>
+    <div class="field" id="odListField" hidden>
+      <label for="odListIn">Milestone ODs</label>
+      <div class="stepper">
+        <input type="text" id="odListIn" inputmode="decimal" autocomplete="off" placeholder="0.1, 0.2, 0.4, …">
+        <button type="button" class="od-reset" id="odListReset" title="Back to the built-in list">Reset</button>
+      </div>
+      <div class="help">Separate ODs with commas or spaces. Saving keeps the list for every project.</div>
     </div>
 
     <label class="check-row">
       <input type="checkbox" id="odAuto">
       <span>Follow the milestones automatically
-        <span class="sub">Counts down to whichever of 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 2.0, 4.0 comes next after the latest reading.</span>
+        <span class="sub" id="odAutoSub"></span>
       </span>
     </label>
 
@@ -1016,7 +1049,7 @@ dialog { max-height: calc(100dvh - 16px); }
    and c.repNo is this culture's number inside it, so a group "Pyruvate" holds
    the cultures named Pyruvate 1, Pyruvate 2, …
 
-   cultures: [{ id, name, notes, tab, groupId, repNo,
+   cultures: [{ id, name, notes, tab, plot, groupId, repNo,
                 running, startedAt, accumMs,
                 cuvette, initialMl, sampleMl, target,
                 measurements: [{ id, t, tPress, od, dilution, vol, ph, at, use }] }]
@@ -1028,6 +1061,11 @@ dialog { max-height: calc(100dvh - 16px); }
    vol = millilitres taken out of the tube for this reading (0 if none)
    ph = pH at the moment of the reading, or null when it was not measured
    target = the OD this culture is counting down to; null follows the milestones
+   plot = "od" or "ph": which value the card's Curve tab draws against time
+
+   milestones: the ODs offered as presets in the target picker, and the ladder
+   a culture with no target of its own climbs through. One list for the whole
+   app — it is a lab convention, not a property of any one project.
    ============================================================ */
 
 const STORE_KEY = "od-tracker.v2";      // v2 groups cultures into projects
@@ -1037,6 +1075,22 @@ const MIN_FIT_POINTS = 3;   // growth rate appears once this many points are in 
 // Volume defaults for a new culture. Declared up here because load() stamps them
 // onto cultures saved before volumes existed, and load() runs first of all.
 const VOL_DEFAULTS = { cuvette: true, initialMl: 5, sampleMl: 0.2 };
+
+/* The milestone list the app starts with, and what "Reset" goes back to. */
+const DEFAULT_MILESTONES = [0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 2.0, 4.0];
+
+/* Any list of would-be ODs — typed, or read back from storage — becomes a
+   sorted set of positive numbers. Anything that isn't one is dropped rather
+   than failing the whole list; rounding to 4 places keeps 0.30000000000000004
+   from surviving as its own entry beside 0.3. */
+function normaliseMilestones(list) {
+  const out = new Set();
+  for (const v of Array.isArray(list) ? list : []) {
+    const n = typeof v === "number" ? v : parseFloat(v);
+    if (Number.isFinite(n) && n > 0) out.add(Math.round(n * 1e4) / 1e4);
+  }
+  return [...out].sort((a, b) => a - b);
+}
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -1210,6 +1264,7 @@ function normaliseCultures(cultures) {
     // null is a real value here — "follow the milestones" — so anything that
     // isn't a usable OD becomes null rather than a default number
     if (!(Number.isFinite(c.target) && c.target > 0)) c.target = null;
+    if (c.plot !== "ph") c.plot = "od";      // which value the card's curve shows
 
     for (const m of c.measurements || []) {
       if (!Number.isFinite(m.vol)) m.vol = c.cuvette ? c.sampleMl : 0;
@@ -1240,6 +1295,9 @@ function load() {
           normaliseCultures(p.cultures);
           normaliseGroups(p);
         }
+        // saved before the list was editable, or edited down to nothing
+        parsed.milestones = normaliseMilestones(parsed.milestones);
+        if (!parsed.milestones.length) parsed.milestones = DEFAULT_MILESTONES.slice();
         return parsed;
       }
     }
@@ -1252,7 +1310,8 @@ function load() {
           projects: [{
             id: uid(), name: "My cultures", createdAt: Date.now(), notes: "", groups: [],
             cultures: normaliseCultures(old.cultures)
-          }]
+          }],
+          milestones: DEFAULT_MILESTONES.slice()
         };
         localStorage.setItem(STORE_KEY, JSON.stringify(migrated));
         console.info(`Migrated ${old.cultures.length} culture(s) into a project.`);
@@ -1273,8 +1332,10 @@ function load() {
                   + `"${STORE_KEY}.backup-…" in localStorage.`);
     } catch (_) { /* storage may be full; nothing more we can do */ }
   }
-  return { projects: [] };
+  return { projects: [], milestones: DEFAULT_MILESTONES.slice() };
 }
+
+const milestones = () => state.milestones;
 
 const P = () => state.projects.find(p => p.id === openId) || null;
 const cultures = () => (P() ? P().cultures : []);
@@ -1814,12 +1875,10 @@ const reachText = remaining => remaining <= 0 ? "due now" : `~${fmtDuration(rema
 const reachSub  = remaining => remaining <= 0 ? "take a reading" : "at current rate";
 
 /* The milestones a culture climbs through when it has not been given a target
-   of its own — they are also the presets in the picker. */
-const OD_MILESTONES = [0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 2.0, 4.0];
-
-// next conventional milestone above the latest reading
-function nextTarget(od) {
-  for (const v of OD_MILESTONES) if (v > od) return v;
+   of its own — they are also the presets in the picker. The list lives in
+   state.milestones; the picker passes its unsaved draft in while it is open. */
+function nextTarget(od, list = milestones()) {
+  for (const v of list) if (v > od) return v;
   return null;
 }
 
@@ -1977,7 +2036,7 @@ function wireCard(el, c, fit, used) {
 
   const svg = el.querySelector('[data-act="chart"]');
   if (svg) drawChart(svg, el.querySelector("[data-tip]"), c, fit);
-  wirePlotSwitch(el);   // the OD / pH switch above the curve, when the card has one
+  wirePlotSwitch(el, c);   // the OD / pH switch above the curve, when the card has one
 }
 
 /* ---------- record dialog ---------- */
@@ -2404,29 +2463,59 @@ document.getElementById("volCancel").onclick = () => { volTarget = null; volDlg.
 /* ---------- target OD dialog ----------
    Which OD the card counts down to. The milestones are there as one tap each,
    the field takes anything else, and the checkbox hands the choice back to the
-   ladder that picks the next milestone on its own. */
+   ladder that picks the next milestone on its own.
 
-const odDlg      = document.getElementById("odDlg");
-const odPresets  = document.getElementById("odPresets");
-const odTargetIn = document.getElementById("odTargetIn");
-const odAuto     = document.getElementById("odAuto");
-const odAll      = document.getElementById("odAll");
-const odErr      = document.getElementById("odErr");
-let odFor = null;
+   The milestone list itself is edited here too. "Add to list" promotes whatever
+   is in the field — the −/+ stepper means it works on the touch panel, which
+   has no keyboard — and the list field underneath takes the whole set at once
+   for anyone who does have one. Edits sit in odDraft until Save; Cancel
+   forgets them. */
+
+const odDlg        = document.getElementById("odDlg");
+const odPresets    = document.getElementById("odPresets");
+const odTargetIn   = document.getElementById("odTargetIn");
+const odAddList    = document.getElementById("odAddList");
+const odListToggle = document.getElementById("odListToggle");
+const odListField  = document.getElementById("odListField");
+const odListIn     = document.getElementById("odListIn");
+const odListReset  = document.getElementById("odListReset");
+const odAuto       = document.getElementById("odAuto");
+const odAutoSub    = document.getElementById("odAutoSub");
+const odAll        = document.getElementById("odAll");
+const odErr        = document.getElementById("odErr");
+let odFor   = null;
+let odDraft = [];            // the milestone list as it stands in the open dialog
 
 const lastOdOf = c => {
   const last = c.measurements.reduce((a, m) => (a && a.t > m.t ? a : m), null);
   return last ? last.od : 0;
 };
 
-odPresets.innerHTML = OD_MILESTONES.map(v =>
-  `<button type="button" data-od="${v}" aria-pressed="false">${fmtTarget(v)}</button>`).join("");
+const parseMilestones = text => normaliseMilestones(text.split(/[\s,;]+/));
+const fmtMilestones   = list => list.map(fmtTarget).join(", ");
+
+function renderPresets() {
+  odPresets.innerHTML = odDraft.length
+    ? odDraft.map(v => `<button type="button" data-od="${v}" aria-pressed="false">${fmtTarget(v)}</button>`).join("")
+    : `<span class="none">No milestones yet — type an OD below and add it to the list.</span>`;
+}
+
+function showListEditor(open) {
+  odListField.hidden = !open;
+  odListToggle.setAttribute("aria-expanded", String(open));
+  odListToggle.textContent = open ? "Hide the list" : "Edit the list…";
+}
 
 function openTarget(c) {
   odFor = c;
   const fit  = fitGrowth(c);
   const last = c.measurements.reduce((a, m) => (a && a.t > m.t ? a : m), null);
   const auto = !Number.isFinite(c.target);
+
+  odDraft            = milestones().slice();
+  odListIn.value     = fmtMilestones(odDraft);
+  showListEditor(false);
+  renderPresets();
 
   odAuto.checked     = auto;
   odTargetIn.value   = auto ? "" : fmtTarget(c.target);
@@ -2450,7 +2539,7 @@ function openTarget(c) {
 function syncTargetForm() {
   const auto = odAuto.checked;
   const v = parseFloat(odTargetIn.value);
-  const next = odFor ? nextTarget(lastOdOf(odFor)) : null;
+  const next = odFor ? nextTarget(lastOdOf(odFor), odDraft) : null;
 
   odPresets.querySelectorAll("[data-od]").forEach(b =>
     b.setAttribute("aria-pressed", String(!auto && parseFloat(b.dataset.od) === v)));
@@ -2463,6 +2552,10 @@ function syncTargetForm() {
     ? (next ? `Following the milestones: OD ${fmtTarget(next)} from here. Tap one above, or type an OD, to fix it instead.`
             : "Past the last milestone — pick a target to keep a countdown.")
     : "Estimated from the fitted growth rate, so it needs a fit before it shows a time.";
+
+  odAutoSub.textContent = odDraft.length
+    ? `Counts down to whichever of ${fmtMilestones(odDraft)} comes next after the latest reading.`
+    : "The list is empty, so there is nothing to follow — add an OD above.";
 }
 
 odPresets.addEventListener("click", e => {
@@ -2476,9 +2569,53 @@ odPresets.addEventListener("click", e => {
 odTargetIn.addEventListener("input", () => { odErr.textContent = ""; syncTargetForm(); });
 odAuto.addEventListener("change", syncTargetForm);
 
+// The typed OD becomes a preset — and stays selected, since it was the one wanted.
+odAddList.addEventListener("click", () => {
+  const v = parseFloat(odTargetIn.value);
+  if (!isFinite(v) || v <= 0) {
+    odErr.textContent = "Type an OD above 0 to add it to the list.";
+    odTargetIn.focus(); return;
+  }
+  odDraft = normaliseMilestones([...odDraft, v]);
+  odListIn.value = fmtMilestones(odDraft);
+  odAuto.checked = false;
+  odTargetIn.value = fmtTarget(v);
+  odErr.textContent = "";
+  renderPresets();
+  syncTargetForm();
+});
+
+odListToggle.addEventListener("click", () => {
+  const open = odListField.hidden;
+  showListEditor(open);
+  if (open) odListIn.focus();
+});
+
+// The presets follow the list field as it is typed, so a slip shows at once.
+odListIn.addEventListener("input", () => {
+  odDraft = parseMilestones(odListIn.value);
+  odErr.textContent = "";
+  renderPresets();
+  syncTargetForm();
+});
+
+odListReset.addEventListener("click", () => {
+  odDraft = DEFAULT_MILESTONES.slice();
+  odListIn.value = fmtMilestones(odDraft);
+  odErr.textContent = "";
+  renderPresets();
+  syncTargetForm();
+});
+
 document.getElementById("odForm").addEventListener("submit", e => {
   e.preventDefault();
   if (!odFor) return odDlg.close();
+
+  if (!odDraft.length) {
+    odErr.textContent = "The milestone list needs at least one OD — add one, or reset it.";
+    showListEditor(true);
+    odListIn.focus(); return;
+  }
 
   let target = null;
   if (!odAuto.checked) {
@@ -2489,6 +2626,7 @@ document.getElementById("odForm").addEventListener("submit", e => {
     }
   }
 
+  state.milestones = odDraft;
   for (const c of (odAll.checked ? cultures() : [odFor])) c.target = target;
   odFor = null;
   save();
@@ -2581,11 +2719,12 @@ document.getElementById("confirmOk").onclick = () => {
    Charts — a value against elapsed hours
    ============================================================ */
 
-/* The two things that can be on the y-axis, and the one difference that matters
+/* The things that can sit on an axis, and the one difference that matters
    between them: OD goes on a log axis, because growth is exponential and the
    straight semi-log line is the whole point, while pH is already a logarithm and
    belongs on a linear one. Everything else — axis title, tick text, tooltip —
-   follows from the series being drawn. */
+   follows from the series being drawn. Time is only ever an x-axis, and the
+   only one that starts at zero rather than at the data. */
 const PLOTS = {
   od: {
     key: "od", label: "OD₆₀₀", log: true,
@@ -2598,30 +2737,46 @@ const PLOTS = {
     valueOf: m => (Number.isFinite(m.ph) ? m.ph : null),
     tick: v => String(+v.toFixed(2)),
     tip:  v => `pH ${v.toFixed(2)}`
+  },
+  t: {
+    key: "t", label: "Elapsed time (h)", log: false,
+    valueOf: m => m.t / 3.6e6,
+    tick: v => String(+v.toFixed(2)),
+    tip:  v => `${v.toFixed(2)} h`
   }
 };
 
-/* One toggle for the whole app rather than one per card: switching to pH is a
-   question about the experiment ("what happened to the medium?"), not about one
-   tube, and having to flip eight cards one at a time would be a chore. Not
-   persisted — a session opens on the OD it was built to show. */
-let plotMode = "od";
+/* What the compare chart puts on each axis. y is OD or pH; x is time, as every
+   card has it, or the other measured value — OD against pH shows how the medium
+   moved as the culture grew, one trajectory per tube. Not persisted — a session
+   opens on the growth curve the app was built to show. */
+let cmpY = "od";
+let cmpX = "t";
 
 const hasPh    = c => c.measurements.some(m => Number.isFinite(m.ph));
 const anyPh    = () => cultures().some(hasPh);
-// a card with no pH of its own stays on OD however the toggle is set
-const plotFor  = c => (plotMode === "ph" && hasPh(c) ? PLOTS.ph : PLOTS.od);
+/* Each card carries its own OD / pH switch (c.plot, saved with the culture), so
+   one tube's pH can sit beside the growth curves of the rest. A card with no pH
+   of its own stays on OD however the switch was left. */
+const plotFor  = c => (c.plot === "ph" && hasPh(c) ? PLOTS.ph : PLOTS.od);
 
-const seriesOf = (c, P) => c.measurements
-  .map(m => ({ x: m.t / 3.6e6, y: P.valueOf(m), use: m.use !== false }))
-  .filter(p => p.y !== null)
-  .sort((a, b) => a.x - b.x);
+/* Points are kept in reading order whatever is on the x-axis, so with OD or pH
+   along the bottom the line still traces the culture's path through time. */
+const seriesOf = (c, PY, PX = PLOTS.t) => c.measurements
+  .slice().sort((a, b) => a.t - b.t)
+  .map(m => ({ x: PX.valueOf(m), y: PY.valueOf(m), use: m.use !== false }))
+  .filter(p => p.x !== null && p.y !== null);
 
 /* The y-axis for one set of values, padded so the extremes are not sitting on
    the frame. `Y` maps a value to a pixel; `ticks` are the values to label.
    A log axis ticks at 1/2/5 per decade, subdividing when the range is so narrow
    that fewer than three would land inside it; a linear axis uses round steps. */
-function yAxis(values, P, top, bottom) {
+const yAxis = (values, P, top, bottom) => axisFor(values, P, bottom, top);
+
+/* The same scale laid along either edge: `p0` is the pixel for the low end of
+   the data and `p1` for the high end, so a y-axis passes (bottom, top) and an
+   x-axis (left, right). */
+function axisFor(values, P, p0, p1) {
   const raw = P.log ? values.map(Math.log10) : values;
   let lo = Math.min(...raw), hi = Math.max(...raw);
   // a flat series has no range of its own to pad — give it one
@@ -2629,7 +2784,7 @@ function yAxis(values, P, top, bottom) {
   const span = Math.max((hi - lo) * 0.12, P.log ? 0.08 : 0.05);
   lo -= span; hi += span;
 
-  const pos = v => top + (1 - (v - lo) / (hi - lo)) * (bottom - top);
+  const pos = v => p0 + ((v - lo) / (hi - lo)) * (p1 - p0);
   const Y = v => pos(P.log ? Math.log10(v) : v);
 
   let ticks = [];
@@ -2661,15 +2816,89 @@ const plotSwitchHTML = active => `<div class="viewsw plot-sw" role="tablist" ari
     <button type="button" role="tab" data-plot="ph" aria-selected="${active === "ph"}">pH</button>
   </div>`;
 
-function wirePlotSwitch(root) {
+/* A value can't be on both compare axes, so whichever axis is changed, the
+   other takes the value it let go — choosing x = OD while y is OD moves y to
+   pH, and back again. From x = time there is nothing to hand over, so y just
+   flips to the other measurement. */
+function setCmpY(key) {
+  if (cmpY === key) return;
+  if (cmpX === key) cmpX = cmpY;
+  cmpY = key;
+  drawOverlay();
+}
+function setCmpX(key) {
+  if (cmpX === key) return;
+  if (cmpY === key) cmpY = cmpX === "t" ? (cmpY === "od" ? "ph" : "od") : cmpX;
+  cmpX = key;
+  drawOverlay();
+}
+
+// the switch on one card: flips that culture alone
+function wirePlotSwitch(root, c) {
   root.querySelectorAll("[data-plot]").forEach(b => {
     b.onclick = () => {
-      if (plotMode === b.dataset.plot) return;
-      plotMode = b.dataset.plot;
-      renderAll();
+      if (c.plot === b.dataset.plot) return;
+      c.plot = b.dataset.plot;
+      save();
+      renderCard(c.id);
     };
   });
 }
+
+/* The x-axis's own switch: the y one is the OD / pH toggle the cards carry. */
+const xSwitchHTML = active => `<div class="viewsw plot-sw" role="tablist" aria-label="Value along the x-axis">
+    <button type="button" role="tab" data-x="t"  aria-selected="${active === "t"}">Time</button>
+    <button type="button" role="tab" data-x="od" aria-selected="${active === "od"}">OD₆₀₀</button>
+    <button type="button" role="tab" data-x="ph" aria-selected="${active === "ph"}">pH</button>
+  </div>`;
+
+/* The toggle bar an axis title raises. One popover serves both axes: it is
+   filled with the switch for whichever title was tapped and placed beside it —
+   above the x title, to the right of the y one — then closed by a choice, a
+   tap anywhere else, or Escape. A choice re-renders the chart, which closes it
+   on the way through drawOverlay. */
+const axisPop = document.getElementById("axisPop");
+
+function openAxisPop(el) {
+  const axis = el.dataset.axis;
+  if (!axisPop.hidden && axisPop.dataset.axis === axis) return closeAxisPop();
+
+  axisPop.innerHTML = axis === "y" ? plotSwitchHTML(cmpY) : xSwitchHTML(cmpX);
+  axisPop.dataset.axis = axis;
+  axisPop.querySelectorAll("[data-plot]").forEach(b => { b.onclick = () => setCmpY(b.dataset.plot); });
+  axisPop.querySelectorAll("[data-x]").forEach(b => { b.onclick = () => setCmpX(b.dataset.x); });
+  axisPop.hidden = false;
+
+  // measured only once it is on screen; then kept inside the chart box
+  const wrap = axisPop.parentElement.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  const pw = axisPop.offsetWidth, ph = axisPop.offsetHeight, gap = 8;
+  let left, top;
+  if (axis === "x") { left = r.left + r.width / 2 - pw / 2; top = r.top - ph - gap; }
+  else              { left = r.right + gap;                 top = r.top + r.height / 2 - ph / 2; }
+  left = Math.min(Math.max(left, wrap.left), wrap.right - pw) - wrap.left;
+  top  = Math.min(Math.max(top,  wrap.top),  wrap.bottom - ph) - wrap.top;
+  axisPop.style.left = `${left}px`;
+  axisPop.style.top  = `${top}px`;
+
+  el.setAttribute("aria-expanded", "true");
+  const current = axisPop.querySelector('[aria-selected="true"]');
+  if (current) current.focus();
+}
+
+function closeAxisPop() {
+  if (axisPop.hidden) return;
+  axisPop.hidden = true;
+  axisPop.innerHTML = "";
+  document.querySelectorAll('.axis-pick[aria-expanded="true"]')
+    .forEach(el => el.setAttribute("aria-expanded", "false"));
+}
+
+document.addEventListener("pointerdown", e => {
+  if (axisPop.hidden || axisPop.contains(e.target) || e.target.closest(".axis-pick")) return;
+  closeAxisPop();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeAxisPop(); });
 
 function drawChart(svg, tip, c, fit) {
   const P = plotFor(c);
@@ -2778,10 +3007,28 @@ function drawChart(svg, tip, c, fit) {
 }
 
 /* ============================================================
-   Compare view — every culture on one semi-log axis.
-   Shared x-axis is each culture's own elapsed time, so cultures
-   inoculated at different clock times still line up at t = 0.
+   Compare view — every culture on one pair of axes.
+   With time along the bottom the x-axis is each culture's own elapsed time,
+   so cultures inoculated at different clock times still line up at t = 0.
+   With OD or pH there instead, each line is one culture's path through the
+   two measurements, drawn in reading order.
    ============================================================ */
+
+/* An axis title, centred on the origin of `transform`. When it can be tapped it
+   gets a caret and a generous invisible hit box — the text alone is 11px high,
+   which is no target on a touch panel. */
+function axisTitleHTML(axis, label, transform, pick) {
+  if (!pick)
+    return `<text class="axis-title" text-anchor="middle" transform="${transform}">${label}</text>`;
+  const w = label.length * 7 + 30;
+  return `<g class="axis-pick" data-axis="${axis}" transform="${transform}" role="button" tabindex="0"
+             aria-haspopup="true" aria-expanded="false"
+             aria-label="Change what the ${axis}-axis shows (now ${label})">
+      <title>Tap to change the ${axis}-axis</title>
+      <rect x="${-w / 2}" y="-18" width="${w}" height="26" fill="transparent"/>
+      <text class="axis-title" text-anchor="middle">${label} <tspan class="caret">▾</tspan></text>
+    </g>`;
+}
 
 function drawOverlay() {
   const svg    = document.getElementById("cmpChart");
@@ -2790,9 +3037,11 @@ function drawOverlay() {
   const sub    = document.getElementById("cmpSub");
   const hint   = document.getElementById("cmpHint");
 
-  // a culture can be drawn as soon as it has 2+ points of whatever is plotted
-  const P = plotMode === "ph" && anyPh() ? PLOTS.ph : PLOTS.od;
-  const all = cultures().map(c => ({ c, fit: fitGrowth(c), pts: seriesOf(c, P) }));
+  // a culture can be drawn as soon as it has 2+ points carrying both values
+  const P  = cmpY === "ph" && anyPh() ? PLOTS.ph : PLOTS.od;
+  const PX = cmpX !== "t" && anyPh() ? PLOTS[cmpX] : PLOTS.t;
+  const timeX = PX.key === "t";
+  const all = cultures().map(c => ({ c, fit: fitGrowth(c), pts: seriesOf(c, P, PX) }));
   const drawable = all.filter(s => s.pts.length >= 2);
   const shown    = drawable.filter(s => !s.c.hidden);
 
@@ -2808,17 +3057,17 @@ function drawOverlay() {
 
   // the switch belongs to the card head, beside the title, and only exists at all
   // once some reading somewhere in the project carries a pH
-  const sw = document.getElementById("cmpPlotSw");
-  sw.innerHTML = anyPh() ? plotSwitchHTML(P.key) : "";
-  wirePlotSwitch(sw);
+  closeAxisPop();
+  svg.setAttribute("aria-label", `${P.label} against ${timeX ? "elapsed hours" : PX.label} for all cultures`);
 
   const thin = all.length - drawable.length;
   sub.textContent = shown.length
-    ? `${shown.length} of ${all.length} plotted`
+    ? `${shown.length} of ${all.length} plotted${timeX ? "" : ` · ${P.label} against ${PX.label}`}`
     : "";
+  const needs = [P, PX].some(a => a.key === "ph") ? "pH " : "";
   hint.textContent = [
     "Tap a culture in the legend to hide or show it.",
-    thin ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs 2+ ${P.key === "ph" ? "pH " : ""}readings).` : ""
+    thin ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs 2+ ${needs}readings).` : ""
   ].filter(Boolean).join(" ");
 
   if (!shown.length) {
@@ -2835,29 +3084,42 @@ function drawOverlay() {
   svg.style.aspectRatio = `${W} / ${H}`;
   svg.classList.toggle("hl-fit", highlightFit);
 
-  const xMax = Math.max(...shown.flatMap(s => s.pts.map(p => p.x)));
-  const xHi = xMax > 0 ? xMax * 1.04 : 1;
-  const X = v => pad.l + (v / xHi) * (W - pad.l - pad.r);
+  // the titles only become controls once there is a pH to switch to
+  const pick = anyPh();
+
+  const xs = shown.flatMap(s => s.pts.map(p => p.x));
+  let X, xTicks;
+  if (timeX) {
+    // time runs from inoculation, so the axis is anchored at zero
+    const xMax = Math.max(...xs);
+    const xHi = xMax > 0 ? xMax * 1.04 : 1;
+    X = v => pad.l + (v / xHi) * (W - pad.l - pad.r);
+    const step = niceStep(xHi, 7);
+    xTicks = [];
+    for (let v = 0; v <= xHi + 1e-9; v += step) xTicks.push(+v.toFixed(6));
+  } else {
+    // a measured value is scaled to the data, the same way the y-axis is
+    ({ Y: X, ticks: xTicks } = axisFor(xs, PX, pad.l, W - pad.r));
+  }
 
   const { Y, ticks: yTicks } = yAxis(shown.flatMap(s => s.pts.map(p => p.y)), P, pad.t, H - pad.b);
 
-  const step = niceStep(xHi, 7);
-  const xTicks = [];
-  for (let v = 0; v <= xHi + 1e-9; v += step) xTicks.push(+v.toFixed(6));
-
-  const tickText = P.tick;
   let g = "";
   for (const v of yTicks) {
     const y = Y(v).toFixed(1);
     g += `<line class="gridline" x1="${pad.l}" y1="${y}" x2="${W - pad.r}" y2="${y}"/>
-          <text class="tick-label" x="${pad.l - 8}" y="${y}" text-anchor="end" dominant-baseline="middle">${tickText(v)}</text>`;
+          <text class="tick-label" x="${pad.l - 8}" y="${y}" text-anchor="end" dominant-baseline="middle">${P.tick(v)}</text>`;
   }
-  for (const v of xTicks)
-    g += `<text class="tick-label" x="${X(v).toFixed(1)}" y="${H - pad.b + 17}" text-anchor="middle">${+v.toFixed(2)}</text>`;
+  for (const v of xTicks) {
+    const x = X(v).toFixed(1);
+    // vertical gridlines only when x is a measurement — a time axis reads by eye
+    if (!timeX) g += `<line class="gridline" x1="${x}" y1="${pad.t}" x2="${x}" y2="${H - pad.b}"/>`;
+    g += `<text class="tick-label" x="${x}" y="${H - pad.b + 17}" text-anchor="middle">${PX.tick(v)}</text>`;
+  }
   g += `<line class="axisline" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${H - pad.b}"/>
         <line class="axisline" x1="${pad.l}" y1="${H - pad.b}" x2="${W - pad.r}" y2="${H - pad.b}"/>
-        <text class="axis-title" x="${(pad.l + W - pad.r) / 2}" y="${H - 5}" text-anchor="middle">Elapsed time (h)</text>
-        <text class="axis-title" x="${-(pad.t + H - pad.b) / 2}" y="13" text-anchor="middle" transform="rotate(-90)">${P.label}</text>`;
+        ${axisTitleHTML("x", PX.label, `translate(${(pad.l + W - pad.r) / 2}, ${H - 5})`, pick)}
+        ${axisTitleHTML("y", P.label,  `rotate(-90) translate(${-(pad.t + H - pad.b) / 2}, 13)`, pick)}`;
 
   /* The line is drawn as two paths rather than one: a segment counts as fitted
      only when BOTH of its endpoints are in the fit, so the heavy stroke never
@@ -2924,6 +3186,11 @@ function drawOverlay() {
         <rect x="${pad.l}" y="${pad.t}" width="${W - pad.l - pad.r}" height="${H - pad.t - pad.b}" fill="transparent" data-hit/>`;
   svg.innerHTML = g;
 
+  svg.querySelectorAll(".axis-pick").forEach(el => {
+    el.onclick = () => openAxisPop(el);
+    el.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAxisPop(el); } };
+  });
+
   const cross = svg.querySelector("[data-cross]");
   const hit   = svg.querySelector("[data-hit]");
 
@@ -2944,7 +3211,7 @@ function drawOverlay() {
     tip.innerHTML =
       `<span class="lg-dot" style="display:inline-block;background:${colorVar(best.s.c)};margin-right:6px"></span>
        <span class="tt-od">${esc(best.s.c.name)}</span>
-       <span class="tt-t"> · ${P.tip(best.p.y)} · ${best.p.x.toFixed(2)} h</span>
+       <span class="tt-t"> · ${P.tip(best.p.y)} · ${PX.tip(best.p.x)}</span>
        ${best.p.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
     tip.style.left = `${(X(best.p.x) / W) * box.width}px`;
     tip.style.top  = `${(Y(best.p.y) / H) * box.height - 10}px`;
@@ -3338,7 +3605,7 @@ document.getElementById("addBtn").onclick = () => {
   const c = {
     id: uid(),
     name: `Culture ${cultures().length + 1}`,
-    notes: "", tab: "data", groupId: null, repNo: null,
+    notes: "", tab: "data", plot: "od", groupId: null, repNo: null,
     running: false, startedAt: null, accumMs: 0,   // clock starts only when Start is pressed
     target:    prev ? prev.target : null,   // one project, one thing being aimed at
     cuvette:   prev ? cuvetteOn(prev) : VOL_DEFAULTS.cuvette,
@@ -3488,7 +3755,124 @@ addEventListener("storage", e => {
   } catch (err) { /* ignore a malformed write from another tab */ }
 });
 
-renderAll();
+/* ============================================================
+   Demo project — ?demo=1
+   A made-up run to show the app off with: two carbon sources in replicate,
+   OD and pH logged through a whole growth curve, one culture without any pH.
+   Added once, beside whatever projects are already there, and never touched
+   again — delete it like any other project. ?demo=reset rebuilds it.
+   ============================================================ */
+
+const DEMO_ID = "demo-ph-shift";
+
+function demoProject() {
+  // a fixed-seed generator, so the demo is the same run on every machine
+  let seed = 0x9e3779b9;
+  const rnd = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const noise = sd => (rnd() + rnd() + rnd() - 1.5) * sd;   // roughly normal
+
+  const start = new Date();                      // yesterday, 09:00 local
+  start.setDate(start.getDate() - 1);
+  start.setHours(9, 0, 0, 0);
+  const t0 = start.getTime();
+
+  /* Each condition: logistic growth after a lag, and a pH that drifts with the
+     biomass made — down on glucose (acetate overflow), up on acetate (it is
+     consumed, the medium alkalinises). `curate` unticks the readings a careful
+     user would drop from the fit: the lag and the stationary phase. */
+  const CONDITIONS = [
+    { name: "Glucose", reps: 3, mu: 0.72, lag: 0.8, K: 3.4, ph0: 7.02, phEnd: 5.4, every: 1, curate: true,
+      notes: "M9 + 0.4 % glucose. pH falls as acetate is excreted." },
+    { name: "Acetate", reps: 2, mu: 0.31, lag: 1.6, K: 1.1, ph0: 7.00, phEnd: 7.9, every: 2, curate: false,
+      notes: "M9 + 0.3 % sodium acetate. pH climbs as the acetate is used up." }
+  ];
+
+  const p = {
+    id: DEMO_ID, name: "Demo — glucose vs acetate", createdAt: t0,
+    notes: "E. coli MG1655 in M9 minimal medium, 37 °C, 220 rpm, 30 mL in 250 mL baffled flasks.\n"
+         + "Inoculated from an overnight LB culture to OD 0.05. OD read every 30–45 min; "
+         + "pH from a 1 mL sample on the bench meter.\n\nThis is made-up data — a demo project.",
+    groups: [], cultures: []
+  };
+
+  const hours = [];                              // reading times, 0 to ~9.5 h
+  for (let h = 0; h < 9.6; h += 0.5 + (hours.length % 3 === 2 ? 0.25 : 0)) hours.push(h);
+
+  for (const cond of CONDITIONS) {
+    const g = { id: uid(), name: cond.name, notes: cond.notes };
+    p.groups.push(g);
+    for (let r = 1; r <= cond.reps; r++) {
+      const mu  = cond.mu * (1 + noise(0.08));
+      const lag = cond.lag + noise(0.3);
+      const od0 = 0.05 * (1 + noise(0.1));
+      const c = {
+        id: uid(), name: `${cond.name} ${r}`, notes: "", tab: "curve", plot: "od", groupId: g.id, repNo: r,
+        running: false, startedAt: null, accumMs: 0, target: null,
+        cuvette: true, initialMl: 30, sampleMl: 1,
+        color: assignColor(p.cultures), hidden: false, measurements: []
+      };
+      for (const h of hours) {
+        const grown = Math.max(0, h - lag);
+        const od = cond.K / (1 + ((cond.K - od0) / od0) * Math.exp(-mu * grown));
+        const odRead = Math.max(0.02, od * (1 + noise(0.03)));
+        const frac = (odRead - od0) / (cond.K - od0);           // biomass made, 0..1
+        const ph = cond.ph0 + (cond.phEnd - cond.ph0) * Math.min(1, Math.max(0, frac)) + noise(0.03);
+        const dil = odRead > 0.8 ? 10 : 1;
+        const t = Math.round(h * 3.6e6 + noise(60e3));
+        const idx = c.measurements.length;
+        // exponential phase only: after the lag, and before the curve bends over
+        const inLag = h < lag + 0.4, stationary = odRead > 0.3 * cond.K;
+        c.measurements.push({
+          id: uid(), t, tPress: t - 20e3, od: +odRead.toFixed(3), dilution: dil, vol: 1,
+          ph: idx % cond.every === 0 ? +ph.toFixed(2) : null,
+          at: t0 + t, use: !(cond.curate && (inLag || stationary)),
+          note: idx === 0 ? "inoculated" : (dil > 1 && c.measurements[idx - 1].dilution === 1 ? "started diluting 1:10" : "")
+        });
+      }
+      c.accumMs = c.measurements[c.measurements.length - 1].t + 4 * 60e3;
+      p.cultures.push(c);
+    }
+  }
+
+  // one culture that never had its pH taken — it drops out when pH is plotted
+  const buffered = {
+    id: uid(), name: "Glucose + 100 mM MOPS", notes: "Buffered control. No pH readings.",
+    tab: "curve", plot: "od", groupId: null, repNo: null, running: false, startedAt: null, accumMs: 0, target: 1,
+    cuvette: true, initialMl: 30, sampleMl: 1, color: assignColor(p.cultures), hidden: false, measurements: []
+  };
+  for (const h of hours) {
+    const grown = Math.max(0, h - 0.8);
+    const od = 3.6 / (1 + ((3.6 - 0.05) / 0.05) * Math.exp(-0.74 * grown));
+    const odRead = Math.max(0.02, od * (1 + noise(0.03)));
+    const t = Math.round(h * 3.6e6 + noise(60e3));
+    buffered.measurements.push({
+      id: uid(), t, tPress: t - 20e3, od: +odRead.toFixed(3), dilution: odRead > 0.8 ? 10 : 1,
+      vol: 1, ph: null, at: t0 + t, use: true, note: ""
+    });
+  }
+  buffered.accumMs = buffered.measurements[buffered.measurements.length - 1].t + 4 * 60e3;
+  p.cultures.push(buffered);
+
+  return p;
+}
+
+(function () {
+  const flag = new URLSearchParams(location.search).get("demo");
+  if (!flag) return;
+  const existing = state.projects.find(p => p.id === DEMO_ID);
+  if (existing && flag !== "reset") { openProject(DEMO_ID); return; }
+  state.projects = state.projects.filter(p => p.id !== DEMO_ID);
+  state.projects.unshift(demoProject());
+  save();
+  openProject(DEMO_ID);
+})();
+
+if (!openId) renderAll();
 </script>
 </body>
 </html>

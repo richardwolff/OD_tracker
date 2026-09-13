@@ -4,6 +4,16 @@ Track bacterial culture growth: record OD<sub>600</sub> readings against a
 per-culture stopwatch, fit a growth rate, and export the run as CSV.
 `index.html` is the whole app — one file, no build step, no server.
 
+## Demo project
+
+To see the app with data in it, open `index.html?demo=1` (in the browser's
+address bar, add `?demo=1` to the end of the file path). This adds a project
+called **Demo — glucose vs acetate** beside any projects already saved: six
+*E. coli* cultures over a ~9.5 h run, in two replicate groups, with OD and pH
+logged through the whole growth curve and one buffered control that never had
+its pH taken. It is made-up data. Delete it like any other project, or open
+`index.html?demo=reset` to rebuild it fresh.
+
 ## Desktop launchers
 
 Puts **OD Tracker** and **Send CSV by Email** in the applications menu and on
