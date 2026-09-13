@@ -1,7 +1,7 @@
 # OD_tracker
 
 Track bacterial culture growth: record OD<sub>600</sub> readings against a
-per-culture stopwatch, fit a growth rate, and export the run as a project (data CSV + project metadata).
+per-culture stopwatch, fit a growth rate, and export the run as a zipped project folder (data CSV + project metadata text file).
 
 ## Desktop launchers
 
