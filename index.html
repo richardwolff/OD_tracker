@@ -409,6 +409,17 @@ svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
 .pt { fill: var(--series-1); stroke: var(--surface); stroke-width: 2; }
 .pt.off { fill: var(--text-muted); }
 .crosshair { stroke: var(--axis); stroke-width: 1; }
+/* Zoom: the range being dragged out, and the way back. The pill sits top-left,
+   the emptiest corner of a growth curve, which starts low and ends high. */
+[data-hit] { cursor: crosshair; }
+.brush { fill: var(--series-1); fill-opacity: .12; stroke: var(--series-1); stroke-width: 1; pointer-events: none; }
+.zoom-out {
+  position: absolute; top: 4px; left: 11%; z-index: 4;
+  font-size: 11.5px; padding: 3px 9px; border-radius: 999px;
+  background: var(--surface); border-color: var(--border); color: var(--text-secondary);
+}
+#cmpChart + .tooltip + .zoom-out { left: 7%; }
+html.touch .zoom-out { min-height: 34px; padding: 6px 12px; font-size: 13px; }
 .tooltip {
   position: absolute; pointer-events: none; z-index: 5;
   background: var(--surface); border: 1px solid var(--border);
@@ -803,6 +814,7 @@ dialog { max-height: calc(100dvh - 16px); }
       <div class="chart-wrap">
         <svg class="chart" id="cmpChart" role="img" aria-label="All cultures on one chart"></svg>
         <div class="tooltip" id="cmpTip"></div>
+        <button class="zoom-out" data-zoom-out hidden title="Back to the whole run">Show all</button>
         <div class="axis-pop" id="axisPop" hidden></div>
       </div>
       <div id="cmpLegend" class="legend"></div>
@@ -1654,6 +1666,7 @@ function renderMeta() {
 }
 
 function openProject(id) {
+  cmpZoom = null;
   openId = id;
   view = "cards";
   metaShown = null;
@@ -1978,6 +1991,7 @@ function curveHTML(c) {
              ? "pH against elapsed hours"
              : "Semi-log growth curve: OD 600 against elapsed hours"}"></svg>
       <div class="tooltip" data-tip></div>
+      <button class="zoom-out" data-zoom-out hidden title="Back to the whole run">Show all</button>
     </div>`;
 }
 
@@ -2802,16 +2816,24 @@ const yAxis = (values, P, top, bottom) => axisFor(values, P, bottom, top);
 /* The same scale laid along either edge: `p0` is the pixel for the low end of
    the data and `p1` for the high end, so a y-axis passes (bottom, top) and an
    x-axis (left, right). */
-function axisFor(values, P, p0, p1) {
-  const raw = P.log ? values.map(Math.log10) : values;
-  let lo = Math.min(...raw), hi = Math.max(...raw);
-  // a flat series has no range of its own to pad — give it one
-  if (!(hi > lo)) { const d = Math.max(Math.abs(hi) * 0.05, P.log ? 0.05 : 0.1); lo -= d; hi += d; }
-  const span = Math.max((hi - lo) * 0.12, P.log ? 0.08 : 0.05);
-  lo -= span; hi += span;
+function axisFor(values, P, p0, p1, domain = null) {
+  let lo, hi;
+  if (domain) {
+    // a zoomed-in range is shown exactly as chosen, with no padding
+    [lo, hi] = P.log ? domain.map(Math.log10) : domain;
+  } else {
+    const raw = P.log ? values.map(Math.log10) : values;
+    lo = Math.min(...raw); hi = Math.max(...raw);
+    // a flat series has no range of its own to pad — give it one
+    if (!(hi > lo)) { const d = Math.max(Math.abs(hi) * 0.05, P.log ? 0.05 : 0.1); lo -= d; hi += d; }
+    const span = Math.max((hi - lo) * 0.12, P.log ? 0.08 : 0.05);
+    lo -= span; hi += span;
+  }
 
   const pos = v => p0 + ((v - lo) / (hi - lo)) * (p1 - p0);
   const Y = v => pos(P.log ? Math.log10(v) : v);
+  // pixel back to value, for reading a dragged-out range off the axis
+  const inv = px => { const v = lo + ((px - p0) / (p1 - p0)) * (hi - lo); return P.log ? 10 ** v : v; };
 
   let ticks = [];
   if (P.log) {
@@ -2832,7 +2854,94 @@ function axisFor(values, P, p0, p1) {
     const step = niceStep(hi - lo, 5);
     for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(6));
   }
-  return { Y, ticks, lo, hi, pos };
+  return { Y, ticks, lo, hi, pos, inv };
+}
+
+/* The time axis: anchored at zero and run a little past the last reading, or,
+   zoomed, exactly the range that was dragged out. Returns the same shape as
+   axisFor so the charts treat the two alike. */
+function timeAxis(xs, p0, p1, domain, target) {
+  const xMax = Math.max(...xs);
+  const [lo, hi] = domain || [0, xMax > 0 ? xMax * 1.04 : 1];
+  const Y   = v  => p0 + ((v - lo) / (hi - lo)) * (p1 - p0);
+  const inv = px => lo + ((px - p0) / (p1 - p0)) * (hi - lo);
+  const step = niceStep(hi - lo, target);
+  const ticks = [];
+  for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(6));
+  return { Y, ticks, lo, hi, inv };
+}
+
+/* ---------- zoom ----------
+   A range along the x-axis, chosen by dragging across the plot; the y-axis then
+   rescales to the readings inside it. Kept for the session only, and per
+   culture for the cards, so a reading landing on a card does not throw the
+   zoom away with the re-render. The compare zoom is in the units of whatever
+   is on its x-axis, so changing that axis clears it. */
+const cardZoom = new Map();   // culture id -> [lo, hi] hours
+let cmpZoom = null;
+
+/* Everything the pointer does over a plot: hover for the tooltip, drag for a
+   zoom, double-click to zoom back out. One handler set for both charts; each
+   passes in how to find the nearest point and what to do with a range.
+   `touch-action: pan-y` on the hit box leaves vertical swipes to the page, so
+   a finger can still scroll past a card — the browser cancels the pointer
+   when it takes the gesture, and the half-drawn brush goes with it. */
+function wireChartPointer(svg, { W, H, left, right, inv, onHover, onLeave, onZoom }) {
+  const hit   = svg.querySelector("[data-hit]");
+  const brush = svg.querySelector("[data-brush]");
+  let drag = null;                     // { x0, moved } while a drag is in progress
+
+  const toView = ev => {
+    const box = svg.getBoundingClientRect();
+    return { x: ((ev.clientX - box.left) / box.width) * W, y: ((ev.clientY - box.top) / box.height) * H };
+  };
+  const clampX = x => Math.min(Math.max(x, left), right);
+  const hideBrush = () => { brush.setAttribute("opacity", "0"); brush.setAttribute("width", "0"); };
+
+  hit.addEventListener("pointerdown", ev => {
+    if (ev.button !== 0) return;
+    drag = { x0: clampX(toView(ev).x), moved: false };
+    hit.setPointerCapture(ev.pointerId);
+  });
+  hit.addEventListener("pointermove", ev => {
+    const p = toView(ev);
+    if (!drag) return onHover(p.x, p.y);
+    const x = clampX(p.x);
+    if (!drag.moved && Math.abs(x - drag.x0) < 3) return;   // a still finger is a tap
+    drag.moved = true;
+    onLeave();
+    brush.setAttribute("x", Math.min(drag.x0, x).toFixed(1));
+    brush.setAttribute("width", Math.abs(x - drag.x0).toFixed(1));
+    brush.setAttribute("opacity", "1");
+  });
+  hit.addEventListener("pointerup", ev => {
+    if (!drag) return;
+    const d = drag; drag = null;
+    hideBrush();
+    if (!d.moved) return;
+    const x = clampX(toView(ev).x);
+    if (Math.abs(x - d.x0) < 6) return;                      // too thin to have meant it
+    const a = inv(Math.min(d.x0, x)), b = inv(Math.max(d.x0, x));
+    if (b > a) onZoom([a, b]);
+  });
+  hit.addEventListener("pointercancel", () => { drag = null; hideBrush(); });
+  hit.addEventListener("pointerleave", () => { if (!drag) onLeave(); });
+  hit.addEventListener("dblclick", () => onZoom(null));
+}
+
+// the brush, the hit box over the plot, and a clip so zoomed-out data stops at the frame
+const plotBoxHTML = (id, W, H, pad) => `
+    <clipPath id="clip-${id}"><rect x="${pad.l}" y="${pad.t}" width="${W - pad.l - pad.r}" height="${H - pad.t - pad.b}"/></clipPath>
+    <rect class="brush" x="0" y="${pad.t}" width="0" height="${H - pad.t - pad.b}" opacity="0" data-brush/>
+    <rect x="${pad.l}" y="${pad.t}" width="${W - pad.l - pad.r}" height="${H - pad.t - pad.b}"
+          fill="transparent" style="touch-action: pan-y" data-hit/>`;
+
+// the "Show all" pill beside a chart: shown while zoomed, and the way back
+function wireZoomOut(svg, zoomed, reset) {
+  const btn = svg.parentElement.querySelector("[data-zoom-out]");
+  if (!btn) return;
+  btn.hidden = !zoomed;
+  btn.onclick = reset;
 }
 
 /* The segmented OD / pH switch. Only drawn where there is a pH to switch to —
@@ -2856,6 +2965,7 @@ function setCmpX(key) {
   if (cmpX === key) return;
   if (cmpY === key) cmpY = cmpX === "t" ? (cmpY === "od" ? "ph" : "od") : cmpX;
   cmpX = key;
+  cmpZoom = null;    // a range in hours means nothing along an OD axis
   drawOverlay();
 }
 
@@ -2937,18 +3047,17 @@ function drawChart(svg, tip, c, fit) {
   const pts = seriesOf(c, P);
 
   // ----- scales -----
-  const xMax = Math.max(...pts.map(p => p.x));
-  const xHi = xMax > 0 ? xMax * 1.04 : 1;
-  const X = v => pad.l + (v / xHi) * (W - pad.l - pad.r);
+  const zoom = cardZoom.get(c.id) || null;
+  const { Y: X, ticks: xTicks, lo: xLo, hi: xHi, inv: xInv } =
+    timeAxis(pts.map(p => p.x), pad.l, W - pad.r, zoom, 6);
 
-  const { Y, ticks: yTicks, lo, hi, pos } = yAxis(pts.map(p => p.y), P, pad.t, H - pad.b);
-
-  const step = niceStep(xHi, 6);
-  const xTicks = [];
-  for (let v = 0; v <= xHi + 1e-9; v += step) xTicks.push(+v.toFixed(6));
+  // zoomed in, the y-axis fits the readings in view; the rest is clipped away
+  const inView = zoom ? pts.filter(p => p.x >= xLo && p.x <= xHi) : pts;
+  const yPts = inView.length ? inView : pts;
+  const { Y, ticks: yTicks, lo, hi, pos } = yAxis(yPts.map(p => p.y), P, pad.t, H - pad.b);
 
   const tickText = P.tick;
-  let g = "";
+  let g = plotBoxHTML(c.id, W, H, pad);
 
   // gridlines + axes
   for (const v of yTicks) {
@@ -2976,12 +3085,12 @@ function drawChart(svg, tip, c, fit) {
   if (P.log && fit.ok && isFinite(fit.mu)) {
     const Ylog   = pos;                                            // already log10 space
     const logAt  = x => (fit.intercept + fit.mu * x) / Math.LN10;   // log10 OD at time x
-    let x1 = 0, x2 = xHi, draw = true;
+    let x1 = xLo, x2 = xHi, draw = true;
 
     if (fit.mu !== 0) {
       const xAtLog = v => (v * Math.LN10 - fit.intercept) / fit.mu;
       const xa = xAtLog(lo), xb = xAtLog(hi);
-      x1 = Math.max(0,   Math.min(xa, xb));
+      x1 = Math.max(xLo, Math.min(xa, xb));
       x2 = Math.min(xHi, Math.max(xa, xb));
       draw = x2 > x1;                       // any of it inside the plot at all?
     } else {
@@ -2996,39 +3105,49 @@ function drawChart(svg, tip, c, fit) {
   // data line + markers
   const col = colorVar(c);
   const d = pts.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(" ");
-  g += `<path class="dataline" style="stroke:${col}" d="${d}"/>`;
+  g += `<g clip-path="url(#clip-${c.id})"><path class="dataline" style="stroke:${col}" d="${d}"/>`;
   for (const p of pts)
     g += `<circle class="pt ${p.use ? "" : "off"}" style="${p.use ? `fill:${col}` : ""}" cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="4.5"/>`;
+  g += `</g>`;
 
-  g += `<line class="crosshair" x1="0" y1="${pad.t}" x2="0" y2="${H - pad.b}" opacity="0" data-cross/>
-        <rect x="${pad.l}" y="${pad.t}" width="${W - pad.l - pad.r}" height="${H - pad.t - pad.b}" fill="transparent" data-hit/>`;
+  g += `<line class="crosshair" x1="0" y1="${pad.t}" x2="0" y2="${H - pad.b}" opacity="0" data-cross/>`;
 
+  // the brush and hit box were opened first so they sit under the marks; move
+  // the hit box back on top now the marks are in, so it catches every pointer
   svg.innerHTML = g;
+  svg.appendChild(svg.querySelector("[data-hit]"));
 
-  // ----- hover: crosshair + tooltip on the nearest point -----
+  // ----- hover: crosshair + tooltip on the nearest point; drag: zoom -----
   const cross = svg.querySelector("[data-cross]");
-  const hit = svg.querySelector("[data-hit]");
+  const setZoom = range => {
+    if (range) cardZoom.set(c.id, range); else cardZoom.delete(c.id);
+    renderCard(c.id);
+  };
+  wireZoomOut(svg, !!zoom, () => setZoom(null));
 
-  hit.addEventListener("pointermove", ev => {
-    const box = svg.getBoundingClientRect();
-    const xv = ((ev.clientX - box.left) / box.width) * W;
-    let near = pts[0], best = Infinity;
-    for (const p of pts) {
-      const dist = Math.abs(X(p.x) - xv);
-      if (dist < best) { best = dist; near = p; }
+  wireChartPointer(svg, {
+    W, H, left: pad.l, right: W - pad.r, inv: xInv, onZoom: setZoom,
+    onHover(xv) {
+      const box = svg.getBoundingClientRect();
+      let near = null, best = Infinity;
+      for (const p of inView) {
+        const dist = Math.abs(X(p.x) - xv);
+        if (dist < best) { best = dist; near = p; }
+      }
+      if (!near) return;
+      cross.setAttribute("x1", X(near.x)); cross.setAttribute("x2", X(near.x));
+      cross.setAttribute("opacity", "1");
+      tip.innerHTML = `<span class="tt-od">${P.tip(near.y)}</span>
+                       <span class="tt-t"> · ${near.x.toFixed(2)} h</span>
+                       ${near.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
+      tip.style.left = `${(X(near.x) / W) * box.width}px`;
+      tip.style.top  = `${(Y(near.y) / H) * box.height - 10}px`;
+      tip.style.opacity = "1";
+    },
+    onLeave() {
+      cross.setAttribute("opacity", "0");
+      tip.style.opacity = "0";
     }
-    cross.setAttribute("x1", X(near.x)); cross.setAttribute("x2", X(near.x));
-    cross.setAttribute("opacity", "1");
-    tip.innerHTML = `<span class="tt-od">${P.tip(near.y)}</span>
-                     <span class="tt-t"> · ${near.x.toFixed(2)} h</span>
-                     ${near.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
-    tip.style.left = `${(X(near.x) / W) * box.width}px`;
-    tip.style.top  = `${(Y(near.y) / H) * box.height - 10}px`;
-    tip.style.opacity = "1";
-  });
-  hit.addEventListener("pointerleave", () => {
-    cross.setAttribute("opacity", "0");
-    tip.style.opacity = "0";
   });
 }
 
@@ -3093,6 +3212,7 @@ function drawOverlay() {
   const needs = [P, PX].some(a => a.key === "ph") ? "pH " : "";
   hint.textContent = [
     "Tap a culture in the legend to hide or show it.",
+    "Drag across the chart to zoom in; double-tap it or use Show all to zoom back out.",
     thin ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs 2+ ${needs}readings).` : ""
   ].filter(Boolean).join(" ");
 
@@ -3101,6 +3221,7 @@ function drawOverlay() {
     svg.removeAttribute("viewBox");
     svg.style.aspectRatio = "";
     tip.style.opacity = "0";
+    wireZoomOut(svg, false, null);
     return;
   }
 
@@ -3114,23 +3235,18 @@ function drawOverlay() {
   const pick = anyPh();
 
   const xs = shown.flatMap(s => s.pts.map(p => p.x));
-  let X, xTicks;
-  if (timeX) {
-    // time runs from inoculation, so the axis is anchored at zero
-    const xMax = Math.max(...xs);
-    const xHi = xMax > 0 ? xMax * 1.04 : 1;
-    X = v => pad.l + (v / xHi) * (W - pad.l - pad.r);
-    const step = niceStep(xHi, 7);
-    xTicks = [];
-    for (let v = 0; v <= xHi + 1e-9; v += step) xTicks.push(+v.toFixed(6));
-  } else {
-    // a measured value is scaled to the data, the same way the y-axis is
-    ({ Y: X, ticks: xTicks } = axisFor(xs, PX, pad.l, W - pad.r));
-  }
+  // time runs from inoculation, so that axis is anchored at zero; a measured
+  // value is scaled to the data, the same way the y-axis is
+  const { Y: X, ticks: xTicks, lo: xLo, hi: xHi, inv: xInv } = timeX
+    ? timeAxis(xs, pad.l, W - pad.r, cmpZoom, 7)
+    : axisFor(xs, PX, pad.l, W - pad.r, cmpZoom);
 
-  const { Y, ticks: yTicks } = yAxis(shown.flatMap(s => s.pts.map(p => p.y)), P, pad.t, H - pad.b);
+  // zoomed in, the y-axis fits the readings in view; the rest is clipped away
+  const inView = s => cmpZoom ? s.pts.filter(p => p.x >= xLo && p.x <= xHi) : s.pts;
+  const ys = shown.flatMap(s => inView(s).map(p => p.y));
+  const { Y, ticks: yTicks } = yAxis(ys.length ? ys : shown.flatMap(s => s.pts.map(p => p.y)), P, pad.t, H - pad.b);
 
-  let g = "";
+  let g = plotBoxHTML("cmp", W, H, pad);
   for (const v of yTicks) {
     const y = Y(v).toFixed(1);
     g += `<line class="gridline" x1="${pad.l}" y1="${y}" x2="${W - pad.r}" y2="${y}"/>
@@ -3151,6 +3267,7 @@ function drawOverlay() {
      only when BOTH of its endpoints are in the fit, so the heavy stroke never
      runs into or out of an excluded reading and claim more than the fit does.
      Faded first, solid over it, so the thick stroke owns the crossings. */
+  g += `<g clip-path="url(#clip-cmp)">`;
   for (const s of shown) {
     const col  = colorVar(s.c);
     const dash = dashOf(s.c);
@@ -3172,6 +3289,7 @@ function drawOverlay() {
       g += `<circle class="pt ${p.use ? "" : "off-fit"}" style="fill:${col}"
               cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="4"/>`;
   }
+  g += `</g>`;
 
   // Direct labels only while they stay legible; past four, converging lines make
   // end-labels collide and the legend carries identity instead.
@@ -3181,7 +3299,9 @@ function drawOverlay() {
     // already carries identity, so a dropped label loses nothing.
     const boxes = [];
     for (const s of shown) {
-      const last = s.pts[s.pts.length - 1];
+      const seen = inView(s);
+      if (!seen.length) continue;              // nothing of it in the zoomed range
+      const last = seen[seen.length - 1];
       const label = trim(s.c.name, 16);
       // Measure before placing: a label must never be clipped by the plot edge.
       // ~6.2px per char at 11.5px semibold is close enough to decide the side.
@@ -3208,9 +3328,11 @@ function drawOverlay() {
               style="fill:var(--text-secondary)">${esc(b.label)}</text>`;
   }
 
-  g += `<line class="crosshair" x1="0" y1="${pad.t}" x2="0" y2="${H - pad.b}" opacity="0" data-cross/>
-        <rect x="${pad.l}" y="${pad.t}" width="${W - pad.l - pad.r}" height="${H - pad.t - pad.b}" fill="transparent" data-hit/>`;
+  g += `<line class="crosshair" x1="0" y1="${pad.t}" x2="0" y2="${H - pad.b}" opacity="0" data-cross/>`;
   svg.innerHTML = g;
+  // the hit box was opened first so the brush sits under the marks; put it back
+  // on top now the marks are in, so it catches every pointer
+  svg.appendChild(svg.querySelector("[data-hit]"));
 
   svg.querySelectorAll(".axis-pick").forEach(el => {
     el.onclick = () => openAxisPop(el);
@@ -3218,34 +3340,36 @@ function drawOverlay() {
   });
 
   const cross = svg.querySelector("[data-cross]");
-  const hit   = svg.querySelector("[data-hit]");
+  const setZoom = range => { cmpZoom = range; drawOverlay(); };
+  wireZoomOut(svg, !!cmpZoom, () => setZoom(null));
 
-  hit.addEventListener("pointermove", ev => {
-    const box = svg.getBoundingClientRect();
-    const xv = ((ev.clientX - box.left) / box.width) * W;
-    const yv = ((ev.clientY - box.top) / box.height) * H;
-    let best = null, bestD = Infinity;
-    for (const s of shown) {
-      for (const p of s.pts) {
-        const d = Math.hypot(X(p.x) - xv, Y(p.y) - yv);
-        if (d < bestD) { bestD = d; best = { s, p }; }
+  wireChartPointer(svg, {
+    W, H, left: pad.l, right: W - pad.r, inv: xInv, onZoom: setZoom,
+    onHover(xv, yv) {
+      const box = svg.getBoundingClientRect();
+      let best = null, bestD = Infinity;
+      for (const s of shown) {
+        for (const p of inView(s)) {
+          const d = Math.hypot(X(p.x) - xv, Y(p.y) - yv);
+          if (d < bestD) { bestD = d; best = { s, p }; }
+        }
       }
+      if (!best) return;
+      cross.setAttribute("x1", X(best.p.x)); cross.setAttribute("x2", X(best.p.x));
+      cross.setAttribute("opacity", "1");
+      tip.innerHTML =
+        `<span class="lg-dot" style="display:inline-block;background:${colorVar(best.s.c)};margin-right:6px"></span>
+         <span class="tt-od">${esc(best.s.c.name)}</span>
+         <span class="tt-t"> · ${P.tip(best.p.y)} · ${PX.tip(best.p.x)}</span>
+         ${best.p.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
+      tip.style.left = `${(X(best.p.x) / W) * box.width}px`;
+      tip.style.top  = `${(Y(best.p.y) / H) * box.height - 10}px`;
+      tip.style.opacity = "1";
+    },
+    onLeave() {
+      cross.setAttribute("opacity", "0");
+      tip.style.opacity = "0";
     }
-    if (!best) return;
-    cross.setAttribute("x1", X(best.p.x)); cross.setAttribute("x2", X(best.p.x));
-    cross.setAttribute("opacity", "1");
-    tip.innerHTML =
-      `<span class="lg-dot" style="display:inline-block;background:${colorVar(best.s.c)};margin-right:6px"></span>
-       <span class="tt-od">${esc(best.s.c.name)}</span>
-       <span class="tt-t"> · ${P.tip(best.p.y)} · ${PX.tip(best.p.x)}</span>
-       ${best.p.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
-    tip.style.left = `${(X(best.p.x) / W) * box.width}px`;
-    tip.style.top  = `${(Y(best.p.y) / H) * box.height - 10}px`;
-    tip.style.opacity = "1";
-  });
-  hit.addEventListener("pointerleave", () => {
-    cross.setAttribute("opacity", "0");
-    tip.style.opacity = "0";
   });
 }
 
