@@ -1,7 +1,11 @@
 # OD_tracker
 
 Track bacterial culture growth: record OD<sub>600</sub> readings against a
-per-culture stopwatch, fit a growth rate, and export the run as a zipped project folder (data CSV + project metadata text file).
+per-culture stopwatch, fit a growth rate, and export the run as a zipped project folder (data CSV + project metadata text file + project record JSON).
+
+**Import project** on the projects screen loads such a zip back in — on another
+machine, or after the browser's storage was cleared. Zips exported before the
+JSON record existed are rebuilt from their CSV and metadata report.
 
 ## Desktop launchers
 

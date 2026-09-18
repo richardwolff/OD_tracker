@@ -772,6 +772,9 @@ dialog { max-height: calc(100dvh - 16px); }
   <button id="colsBtn" class="icon ghost" title="Cards per row" aria-label="Cards per row" hidden>▦</button>
   <button id="fsBtn" class="icon ghost" title="Full screen" aria-label="Enter full screen">⛶</button>
   <button id="themeBtn" class="icon ghost" title="Toggle light / dark" aria-label="Toggle light / dark">◐</button>
+  <button id="importProjBtn" class="ghost"
+          title="Load a project from a zip exported by this app">Import project</button>
+  <input type="file" id="importFile" accept=".zip,application/zip,application/x-zip-compressed" hidden>
   <button id="addProjBtn" class="primary">+ New project</button>
   <button id="addBtn" class="primary" hidden>+ New culture</button>
 </header>
@@ -782,6 +785,7 @@ dialog { max-height: calc(100dvh - 16px); }
     <h2>No projects yet</h2>
     <p>A project holds a set of cultures — one experiment, one project.</p>
     <button class="primary" onclick="document.getElementById('addProjBtn').click()">+ New project</button>
+    <p class="hint">or <a href="#" onclick="document.getElementById('importProjBtn').click(); return false;">import one</a> from a zip exported earlier</p>
   </div>
 
   <div id="grid" class="grid"></div>
@@ -1025,6 +1029,16 @@ dialog { max-height: calc(100dvh - 16px); }
 </dialog>
 
 <!-- confirm delete -->
+<dialog id="noticeDlg">
+  <div class="dlg-body">
+    <p class="dlg-title" id="noticeTitle"></p>
+    <p class="dlg-sub" id="noticeSub"></p>
+    <div class="dlg-actions">
+      <button type="button" class="primary" id="noticeOk">OK</button>
+    </div>
+  </div>
+</dialog>
+
 <dialog id="confirmDlg">
   <div class="dlg-body">
     <p class="dlg-title" id="confirmTitle">Delete?</p>
@@ -1543,6 +1557,7 @@ function renderAll() {
   syncBulkButtons();
   document.getElementById("addBtn").hidden      = !inProject;
   document.getElementById("addProjBtn").hidden  = inProject;
+  document.getElementById("importProjBtn").hidden = inProject;
   document.getElementById("appTitle").classList.toggle("clickable", inProject);
   document.getElementById("appTitle").title = inProject ? "Rename project" : "";
   document.getElementById("appTitle").innerHTML = inProject
@@ -2715,6 +2730,17 @@ document.getElementById("confirmOk").onclick = () => {
   confirmFn = null;
 };
 
+/* ---------- notice dialog ----------
+   One button, nothing to decide: for telling the user something went wrong. */
+
+const noticeDlg = document.getElementById("noticeDlg");
+function notice(title, sub) {
+  document.getElementById("noticeTitle").textContent = title;
+  document.getElementById("noticeSub").textContent = sub;
+  noticeDlg.showModal();
+}
+document.getElementById("noticeOk").onclick = () => noticeDlg.close();
+
 /* ============================================================
    Charts — a value against elapsed hours
    ============================================================ */
@@ -3417,7 +3443,7 @@ function metadataReport(p) {
    ZIP — the data and its metadata, kept together
 
    Entries are STORED, not deflated. This app has no build step and no
-   dependencies, and one run is two small text files: the archive exists to
+   dependencies, and one run is three small text files: the archive exists to
    stop the readings and the notes that explain them from being separated, not
    to make them smaller. Names go in as UTF-8 with the language-encoding flag
    set, because nameToken deliberately keeps letters like Δ and µ.
@@ -3491,13 +3517,29 @@ function zipBlob(files, when = new Date()) {
 }
 
 /* Everything one run produces, under one name: the reading-level CSV a script
-   would read, and the metadata report a person would. */
+   would read, the metadata report a person would, and the project record the
+   app itself reads back — Import project restores from it exactly. */
 function projectZip(p) {
   const stem = exportNameAs("", p.name).replace(/\.$/, "");
   return zipBlob([
     { name: `${stem}.csv`,          text: csvFor(p.cultures) },
-    { name: `${stem}_metadata.txt`, text: metadataReport(p) }
+    { name: `${stem}_metadata.txt`, text: metadataReport(p) },
+    { name: `${stem}_project.json`, text: JSON.stringify(projectSnapshot(p), null, 2) + "\n" }
   ]);
+}
+
+/* The project as saved, with every stopwatch stopped at the moment of export.
+   A running clock is a pair (startedAt, accumMs) that only means something on
+   the machine that started it; on import days later it would read as days of
+   growth. Frozen, the elapsed time is what the readings were plotted against. */
+const PROJECT_FORMAT = "od-tracker-project";
+
+function projectSnapshot(p, now = Date.now()) {
+  const copy = JSON.parse(JSON.stringify(p));
+  for (const c of copy.cultures) {
+    if (c.running) { c.accumMs = elapsed(c, now); c.running = false; c.startedAt = null; }
+  }
+  return { format: PROJECT_FORMAT, version: 1, exportedAt: now, project: copy };
 }
 
 /* ---------- export file names ----------
@@ -3555,6 +3597,299 @@ function csvFor(cultures) {
   }
   return lines.join("\n");
 }
+
+/* ============================================================
+   Import — a project zip read back in
+
+   The reverse of Export project. The zip is opened here, with no library: the
+   central directory is walked from the end-of-archive record, and each entry is
+   either stored (what this app writes) or deflated (what Finder and Explorer
+   write when a folder is zipped again), which the browser's own
+   DecompressionStream unpacks.
+
+   Two sources, in order of preference:
+     <stem>_project.json  — the project record itself. Exact.
+     <stem>.csv           — exports made before the JSON existed. The readings,
+                            cultures, groups and culture notes all live in the
+                            CSV; the project notes and group notes are recovered
+                            from the metadata report beside it.
+   Everything imported gets fresh ids, so the same zip can be brought in twice
+   and land as two projects rather than one overwriting the other.
+   ============================================================ */
+
+async function inflateRaw(bytes) {
+  if (typeof DecompressionStream !== "function")
+    throw new Error("This browser cannot open compressed zip entries. Try Chrome, Edge, Firefox or Safari 16.4 or newer.");
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function unzip(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const view  = new DataView(buffer);
+  if (bytes.length < 22) throw new Error("That file is not a zip archive.");
+
+  // The end-of-central-directory record sits at the very end, after an optional
+  // comment of up to 64 KB — so scan back for its signature.
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 0xffff); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("That file is not a zip archive.");
+
+  const count = view.getUint16(eocd + 10, true);
+  let at = view.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const files = [];
+  for (let i = 0; i < count; i++) {
+    if (at + 46 > bytes.length || view.getUint32(at, true) !== 0x02014b50)
+      throw new Error("The zip archive is damaged.");
+    const method  = view.getUint16(at + 10, true);
+    const csize   = view.getUint32(at + 20, true);
+    const nameLen = view.getUint16(at + 28, true);
+    const extraLen = view.getUint16(at + 30, true);
+    const commentLen = view.getUint16(at + 32, true);
+    const local   = view.getUint32(at + 42, true);
+    const name    = dec.decode(bytes.subarray(at + 46, at + 46 + nameLen));
+    at += 46 + nameLen + extraLen + commentLen;
+
+    if (name.endsWith("/")) continue;                         // a folder entry
+    // The local header carries its own name and extra lengths, and the extra
+    // field there is often a different size from the central one.
+    const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    let data = bytes.subarray(start, start + csize);
+    if (method === 8) data = await inflateRaw(data);
+    else if (method !== 0) throw new Error(`The zip uses a compression method this app cannot read (${method}).`);
+    files.push({ name, bytes: data });
+  }
+  return files;
+}
+
+/* Entries are matched on their file name alone, ignoring any folder the zip
+   puts them under, and Finder's "__MACOSX/._foo" resource forks are skipped. */
+const baseName = path => path.split("/").pop();
+const zipEntry = (files, ext) => files.find(f =>
+  !f.name.includes("__MACOSX/") && !baseName(f.name).startsWith(".") && baseName(f.name).toLowerCase().endsWith(ext));
+
+// RFC 4180: quoted fields may hold commas, newlines and doubled quotes
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch !== '"') field += ch;
+      else if (text[i + 1] === '"') { field += '"'; i++; }
+      else inQ = false;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ",") { row.push(field); field = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); rows.push(row); row = []; field = "";
+    } else field += ch;
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+/* The pieces of the metadata report the CSV does not carry: the project's own
+   name, creation date and notes, and each replicate group's notes. Read by the
+   layout metadataReport writes — a section is a heading between two rules,
+   project notes are indented two spaces and group notes four, and a note ends
+   at the first truly empty line (a blank line inside a note is padded). */
+function parseMetadataReport(text) {
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+  const out = { name: "", createdAt: null, notes: "", groupNotes: new Map() };
+  const takeNote = (from, indent) => {
+    const pad = " ".repeat(indent);
+    const got = [];
+    let i = from;
+    for (; i < lines.length && lines[i].startsWith(pad); i++) got.push(lines[i].slice(indent));
+    const body = got.join("\n").replace(/\s+$/, "");
+    return { text: body === "(none)" ? "" : body, next: i };
+  };
+
+  let section = "";
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let m;
+    if (lines[i - 1] === RULE2 && lines[i + 1] === RULE2) { section = line; i++; continue; }
+    if ((m = line.match(/^Project {2,}(.+)$/))) out.name = m[1].trim();
+    else if ((m = line.match(/^Project created {2,}(.+)$/))) {
+      const t = Date.parse(m[1].trim());
+      if (Number.isFinite(t)) out.createdAt = t;
+    } else if (section === "PROJECT NOTES" && line.startsWith("  ") && !out.notes && lines[i - 1] === RULE2) {
+      const r = takeNote(i, 2); out.notes = r.text; i = r.next - 1;
+    } else if (section === "REPLICATE GROUPS" && (m = line.match(/^(.+?) {2}\(\d+ replicates?\)$/))) {
+      const g = m[1];
+      // the group's notes are the four-space block under "  Group notes"
+      for (let j = i + 1; j < lines.length && lines[j] !== ""; j++) {
+        if (lines[j] === "  Group notes") { out.groupNotes.set(g, takeNote(j + 1, 4).text); break; }
+      }
+    }
+  }
+  return out;
+}
+
+/* A project rebuilt from the reading-level CSV. One row per reading, or one
+   row with no OD for a culture that never had any; cultures and groups are
+   named, not numbered, so they come back by name. */
+function projectFromCSV(text, meta, fallbackName) {
+  const rows = parseCSV(text.replace(/^﻿/, ""));
+  if (!rows.length) throw new Error("The CSV in the zip is empty.");
+  const head = rows[0].map(h => h.trim().toLowerCase());
+  const col = name => head.indexOf(name);
+  if (col("culture") < 0 || col("od600") < 0)
+    throw new Error("The CSV in the zip does not look like an OD Tracker export — no culture / od600 columns.");
+  const cell = (r, name) => { const i = col(name); return i < 0 || i >= r.length ? "" : r[i]; };
+  const num  = (r, name) => { const v = parseFloat(cell(r, name)); return Number.isFinite(v) ? v : null; };
+
+  const p = { id: uid(), name: meta.name || fallbackName, createdAt: meta.createdAt || Date.now(),
+              notes: meta.notes || "", cultures: [], groups: [] };
+  const byName = new Map();   // culture name -> culture
+  const groups = new Map();   // group name -> group
+
+  for (const r of rows.slice(1)) {
+    const cname = cell(r, "culture").trim();
+    if (!cname) continue;
+    let c = byName.get(cname);
+    if (!c) {
+      // "notes" is what the column was called before reading notes joined it
+      c = { id: uid(), name: cname, notes: cell(r, "culture_notes") || cell(r, "notes"), tab: "data", plot: "od",
+            groupId: null, repNo: null, running: false, startedAt: null, accumMs: 0,
+            target: null, cuvette: VOL_DEFAULTS.cuvette, initialMl: null, sampleMl: null,
+            color: assignColor(p.cultures), hidden: false, measurements: [] };
+      const gname = cell(r, "replicate_group").trim();
+      if (gname) {
+        let g = groups.get(gname);
+        if (!g) { g = { id: uid(), name: gname, notes: meta.groupNotes.get(gname) || "" }; groups.set(gname, g); p.groups.push(g); }
+        c.groupId = g.id;
+        const no = parseInt(cell(r, "replicate_no"), 10);
+        c.repNo = Number.isInteger(no) ? no : null;
+      }
+      // volume_left is what remained after this row's draw, so the starting
+      // volume is the first row's remainder plus what that row took
+      const left = num(r, "volume_left_ml"), drawn = num(r, "volume_removed_ml");
+      if (left !== null) c.initialMl = left + (drawn || 0);
+      byName.set(cname, c);
+      p.cultures.push(c);
+    }
+    const od = num(r, "od600");
+    if (od === null) continue;                                // the "no readings" row
+    const hours = num(r, "elapsed_hours");
+    const t = hours === null ? 0 : hours * 3.6e6;
+    const pressed = num(r, "pressed_elapsed_hours");
+    const at = Date.parse(cell(r, "recorded_at_iso"));
+    const ph = num(r, "ph");
+    c.measurements.push({
+      id: uid(), t, tPress: pressed === null ? t : pressed * 3.6e6,
+      od, dilution: num(r, "dilution_factor") || 1,
+      vol: num(r, "volume_removed_ml") || 0,
+      ph: ph !== null && ph >= 0 && ph <= 14 ? ph : null,
+      at: Number.isFinite(at) ? at : p.createdAt + t,
+      use: cell(r, "in_fit").trim() !== "0",
+      note: cell(r, "reading_note")
+    });
+  }
+  if (!p.cultures.length) throw new Error("The CSV in the zip holds no cultures.");
+
+  for (const c of p.cultures) {
+    c.measurements.sort((a, b) => a.t - b.t);
+    // the stopwatch stands where the last reading left it
+    c.accumMs = c.measurements.length ? Math.max(...c.measurements.map(m => m.t)) : 0;
+    // The sample size is not a column; it is whatever the readings drew. A
+    // culture whose readings took nothing was not being sampled by cuvette.
+    const draws = c.measurements.map(drawnOf).filter(v => v > 0);
+    c.cuvette  = draws.length > 0 || c.measurements.length === 0;
+    c.sampleMl = draws.length ? draws[draws.length - 1] : VOL_DEFAULTS.sampleMl;
+  }
+  return p;
+}
+
+/* The project record exported by projectSnapshot. Trusted no further than the
+   saved state is: it goes through the same normalisers as a load(). */
+function projectFromJSON(text) {
+  let doc;
+  try { doc = JSON.parse(text); }
+  catch (_) { throw new Error("The project file in the zip is not valid JSON."); }
+  if (!doc || doc.format !== PROJECT_FORMAT || !doc.project || typeof doc.project !== "object")
+    throw new Error("The project file in the zip was not written by OD Tracker.");
+  const p = doc.project;
+  if (typeof p.name !== "string" || !p.name.trim()) throw new Error("The project file has no project name.");
+  if (!Array.isArray(p.cultures)) p.cultures = [];
+  if (typeof p.notes !== "string") p.notes = "";
+  if (!Number.isFinite(p.createdAt)) p.createdAt = Date.now();
+  for (const c of p.cultures) {
+    if (!c || typeof c !== "object") throw new Error("The project file has a broken culture record.");
+    if (typeof c.name !== "string") c.name = "Culture";
+    if (typeof c.notes !== "string") c.notes = "";
+    if (!Array.isArray(c.measurements)) c.measurements = [];
+    c.measurements = c.measurements.filter(m => m && Number.isFinite(m.t) && Number.isFinite(m.od));
+    // a clock still running in the file (older or hand-edited) stops at export time
+    if (c.running && Number.isFinite(c.startedAt) && Number.isFinite(doc.exportedAt))
+      c.accumMs = (c.accumMs || 0) + Math.max(0, doc.exportedAt - c.startedAt);
+    c.running = false; c.startedAt = null;
+    if (!Number.isFinite(c.accumMs)) c.accumMs = 0;
+    if (c.tab !== "notes") c.tab = "data";
+  }
+  return p;
+}
+
+/* Fresh ids throughout, keeping the culture -> group links intact. */
+function reidentify(p) {
+  const gid = new Map();
+  p.id = uid();
+  for (const g of groupsOf(p)) { const n = uid(); gid.set(g.id, n); g.id = n; }
+  for (const c of p.cultures) {
+    c.id = uid();
+    c.groupId = gid.get(c.groupId) || null;
+    for (const m of c.measurements) m.id = uid();
+  }
+  return p;
+}
+
+// "LB growth" already here -> "LB growth (2)", so the two can be told apart in the list
+function unusedProjectName(name) {
+  const taken = new Set(state.projects.map(p => p.name));
+  if (!taken.has(name)) return name;
+  for (let n = 2; ; n++) if (!taken.has(`${name} (${n})`)) return `${name} (${n})`;
+}
+
+async function importProjectZip(file) {
+  const files = await unzip(await file.arrayBuffer());
+  const dec = new TextDecoder();
+  const json = zipEntry(files, "_project.json") || zipEntry(files, ".json");
+  const csv  = zipEntry(files, ".csv");
+  let p;
+  if (json) p = projectFromJSON(dec.decode(json.bytes));
+  else if (csv) {
+    const txt  = zipEntry(files, "_metadata.txt") || zipEntry(files, ".txt");
+    const meta = parseMetadataReport(txt ? dec.decode(txt.bytes) : "");
+    // the export name is <project>_<m>_<d>_<yyyy>.csv — the date comes off
+    const stem = baseName(csv.name).replace(/\.csv$/i, "").replace(/_\d{1,2}_\d{1,2}_\d{4}$/, "");
+    p = projectFromCSV(dec.decode(csv.bytes), meta, stem.replace(/_/g, " ") || "Imported project");
+  } else throw new Error("The zip holds no project file (…_project.json) and no data CSV.");
+
+  reidentify(p);
+  normaliseCultures(p.cultures);
+  normaliseGroups(p);
+  p.name = unusedProjectName(p.name.trim());
+  state.projects.unshift(p);
+  save();
+  openProject(p.id);
+}
+
+const importFileIn = document.getElementById("importFile");
+document.getElementById("importProjBtn").onclick = () => { importFileIn.value = ""; importFileIn.click(); };
+importFileIn.onchange = async () => {
+  const file = importFileIn.files && importFileIn.files[0];
+  if (!file) return;
+  try { await importProjectZip(file); }
+  catch (err) {
+    console.error("Import failed:", err);
+    notice("Could not import that project", err && err.message ? err.message : String(err));
+  }
+};
 
 /* Ask where to put the file when the browser can (Chrome/Edge, and Chromium on
    the Pi) — the picker opens in the folder used last, remembered under the "id".
