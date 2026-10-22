@@ -66,14 +66,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate,
     // ---------------------------------------------------------------- navigation
     // Exports are <a download> clicks on blob: URLs; WebKit flags those as
     // downloads and we route them to a Save dialog. Anything pointing off the
-    // machine goes to the default browser rather than replacing the app page.
+    // machine goes to the default browser rather than replacing the app page —
+    // but only for the page itself: a frame inside it, like the Station Board,
+    // loads in place. (No target frame means a new window, also the browser's.)
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  preferences: WKWebpagePreferences,
                  decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
         if action.shouldPerformDownload {
             decisionHandler(.download, preferences); return
         }
-        if let url = action.request.url, let scheme = url.scheme,
+        let wholePage = action.targetFrame?.isMainFrame ?? true
+        if wholePage, let url = action.request.url, let scheme = url.scheme,
            scheme == "http" || scheme == "https" || scheme == "mailto" {
             NSWorkspace.shared.open(url)
             decisionHandler(.cancel, preferences); return
