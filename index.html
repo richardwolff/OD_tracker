@@ -772,7 +772,47 @@ dialog { max-height: calc(100dvh - 16px); }
 .station-btn .sb-who { overflow: hidden; text-overflow: ellipsis; }
 .sb-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
 .sb-dot.on { background: var(--good); }
+.sb-dot.idle { background: var(--serious); }   /* reachable, but nobody logged on here */
 .sb-dot.off { background: var(--critical); }
+
+/* The log-on menu, dropped from the header button: who's here, everyone else
+   to tap on with, and a way to add a name. Above the request stack while open,
+   since both live in the top right. */
+.sb-menu {
+  position: fixed; z-index: 45;
+  width: min(300px, calc(100vw - 20px)); max-height: calc(100vh - 70px); overflow-y: auto;
+  background: var(--surface); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.22); padding: 6px;
+}
+.sb-sec {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .05em; padding: 8px 10px 4px;
+}
+.sb-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  text-align: left; border: 0; background: transparent; border-radius: 8px;
+  padding: 9px 10px; font-size: 14.5px; font-weight: 500; white-space: normal;
+}
+.sb-item:hover { background: var(--surface-sunk); }
+.sb-item small { margin-left: auto; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.sb-item.add { color: var(--series-1); font-weight: 600; }
+.sb-here { display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 10px; }
+.sb-here b { font-weight: 600; }
+.sb-here small { color: var(--text-muted); font-size: 12px; }
+.sb-here button { margin-left: auto; font-size: 12.5px; padding: 4px 10px; }
+.sb-add-row { display: flex; gap: 6px; padding: 4px 6px 6px; }
+.sb-add-row input {
+  flex: 1; min-width: 0; font: inherit; font-size: 15px; color: var(--text-primary);
+  background: var(--page); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+}
+.sb-add-row input:focus { outline: none; border-color: var(--series-1); }
+.sb-menu hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
+.sb-menu .sb-note { color: var(--text-secondary); font-size: 13px; padding: 8px 10px; }
+.sb-menu .err { padding: 0 10px 6px; }
+html.touch .sb-item { min-height: 46px; font-size: 16px; }
+html.touch .sb-here button { min-height: 38px; }
+html.touch .sb-add-row input { font-size: 17px; padding: 10px 12px; }
 
 .board-overlay {
   position: fixed; inset: 0; z-index: 30;
@@ -835,7 +875,8 @@ html.touch .sb-msg-actions button { min-height: 42px; }
   <button id="exportAll" class="ghost" hidden
           title="Download the readings and the metadata report together, as a zip">Export project</button>
   <button id="colsBtn" class="icon ghost" title="Cards per row" aria-label="Cards per row" hidden>▦</button>
-  <button id="stationBtn" class="ghost station-btn" title="Station Board"><span class="sb-dot" id="sbDot"></span><span class="sb-who" id="sbWho">Station</span></button>
+  <button id="stationBtn" class="ghost station-btn" title="Log on at this station" aria-haspopup="menu"><span class="sb-dot" id="sbDot"></span><span class="sb-who" id="sbWho">Station</span></button>
+  <button id="boardBtn" class="ghost" hidden title="Every station and who's at it; message a person or a station">Stations</button>
   <button id="fsBtn" class="icon ghost" title="Full screen" aria-label="Enter full screen">⛶</button>
   <button id="themeBtn" class="icon ghost" title="Toggle light / dark" aria-label="Toggle light / dark">◐</button>
   <button id="importProjBtn" class="ghost"
@@ -1131,6 +1172,9 @@ html.touch .sb-msg-actions button { min-height: 42px; }
     <p id="boardDownWhy"></p>
   </div>
 </div>
+
+<!-- the log-on menu, dropped from the header button -->
+<div class="sb-menu" id="sbMenu" role="menu" hidden></div>
 
 <!-- requests for the people at this station, upper right -->
 <div id="msgStack" aria-live="polite"></div>
@@ -4330,6 +4374,8 @@ const SB_KEY = STORE_KEY + ".station";
 const SB_POLL_MS = 4000;
 
 const sbBtn     = document.getElementById("stationBtn");
+const boardBtn  = document.getElementById("boardBtn");
+const sbMenu    = document.getElementById("sbMenu");
 const sbDot     = document.getElementById("sbDot");
 const sbWho     = document.getElementById("sbWho");
 const sbDlg     = document.getElementById("sbDlg");
@@ -4412,12 +4458,16 @@ function sbRender() {
   } else {
     const mine = sbState && sbState.stations.find(s => s.name === sb.name);
     const here = mine ? mine.people.map(p => p.name) : [];
-    sbDot.className = "sb-dot " + (sbOnline ? "on" : "off");
+    // green: someone's here; orange: the board is there but nobody's logged on; red: no board
+    sbDot.className = "sb-dot " + (!sbTried ? "" : !sbOnline ? "off" : here.length ? "on" : "idle");
     sbWho.textContent = !sbState ? sb.name : here.length ? here.join(", ") : "Log on";
     sbBtn.title = `${sb.name}: ${sbOnline
       ? (here.length ? `${here.join(", ")} logged on` : "nobody logged on")
-      : "can't reach the board server"} — open the Station Board`;
+      : "can't reach the board server"} — tap to log on or off`;
   }
+  boardBtn.hidden = !sbOn();
+  // follow along while open, but never redraw under a name being typed
+  if (!sbMenu.hidden && document.activeElement?.id !== "sbAddName") sbMenuRender();
 
   // the requests, upper right; rebuilt only when the set changes, so one
   // arriving does not replay the others' entrance
@@ -4509,7 +4559,105 @@ function closeBoard() {
   sbPoll();      // a log-on made on the board shows in the header straight away
 }
 
-sbBtn.onclick = () => openBoard();
+/* ---------- the log-on menu ----------
+   Tapping the header button drops this straight down: no board, no dialog.
+   Who's logged on here (with Log off), everyone else on the list (tap to log
+   on here), and a name to add. It follows the polls while open, but only
+   rebuilds when something changed, so a tap is never lost to a redraw. */
+let sbAdding = false;      // the "Add name" row is showing
+let sbMenuErr = "";
+
+function sbMenuRender() {
+  let html;
+  if (!sbState) {
+    html = `<div class="sb-note">${sbOnline || !sbTried ? "Connecting to the board…"
+      : `Can't reach the board server at ${esc(sb.server)}.`}</div>`;
+  } else {
+    const mine = sbState.stations.find(s => s.name === sb.name);
+    const here = mine ? mine.people : [];
+    const hereNames = here.map(p => p.name);
+    const others = sbState.people.filter(p => !hereNames.includes(p.name));
+    const hhmm = ms => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    html = (here.length
+        ? `<div class="sb-sec">Logged on at ${esc(sb.name)}</div>`
+          + here.map(p => `<div class="sb-here"><b>${esc(p.name)}</b><small>since ${hhmm(p.since)}</small>
+              <button type="button" data-sb-off="${esc(p.name)}">Log off</button></div>`).join("")
+          + `<hr>`
+        : "")
+      + `<div class="sb-sec">${here.length ? "Also log on" : `Log on at ${esc(sb.name)}`}</div>`
+      + others.map(p => `<button type="button" class="sb-item" role="menuitem" data-sb-on="${esc(p.name)}">${esc(p.name)}`
+          + (p.stations.length ? `<small>at ${esc(p.stations.join(", "))}</small>` : "") + `</button>`).join("")
+      + (sbAdding
+        ? `<form class="sb-add-row" id="sbAddForm"><input id="sbAddName" maxlength="40" placeholder="Name" autocomplete="off">
+             <button type="submit" class="primary">Add</button></form>`
+        : `<button type="button" class="sb-item add" role="menuitem" id="sbAddBtn">+ Add name</button>`)
+      + (sbMenuErr ? `<div class="err">${esc(sbMenuErr)}</div>` : "");
+  }
+  html += `<hr><button type="button" class="sb-item" role="menuitem" id="sbMenuSettings">Station settings</button>`;
+
+  if (sbMenu.dataset.html === html) return;
+  sbMenu.dataset.html = html;
+  sbMenu.innerHTML = html;
+  sbMenu.querySelectorAll("[data-sb-on]").forEach(b => { b.onclick = () => sbLogon(b.dataset.sbOn); });
+  sbMenu.querySelectorAll("[data-sb-off]").forEach(b => { b.onclick = () => sbAct("/api/logoff", { person: b.dataset.sbOff, station: sb.name }); });
+  const addBtn = document.getElementById("sbAddBtn");
+  if (addBtn) addBtn.onclick = () => { sbAdding = true; sbMenuRender(); document.getElementById("sbAddName").focus(); };
+  const addForm = document.getElementById("sbAddForm");
+  if (addForm) addForm.onsubmit = e => {
+    e.preventDefault();
+    const name = document.getElementById("sbAddName").value.trim().replace(/\s+/g, " ");
+    if (name) sbLogon(name);
+  };
+  document.getElementById("sbMenuSettings").onclick = () => { closeSbMenu(); openSbSettings(); };
+}
+
+function sbLogon(name) {
+  sbAct("/api/logon", { person: name, station: sb.name });
+}
+
+// one change, then a fresh read so the header shows it at once
+async function sbAct(path, body) {
+  try {
+    const r = await fetch(`${sb.server}${path}`, {
+      method: "POST", headers: sbHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body)
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `The board said ${r.status}.`);
+    closeSbMenu();
+    sbPoll();
+  } catch (err) {
+    sbMenuErr = err instanceof TypeError ? "Can't reach the board server." : err.message;
+    sbMenuRender();
+  }
+}
+
+function openSbMenu() {
+  sbAdding = false; sbMenuErr = "";
+  delete sbMenu.dataset.html;
+  sbMenuRender();
+  sbMenu.hidden = false;
+  // under the button, right edges aligned, kept on screen
+  const r = sbBtn.getBoundingClientRect(), w = sbMenu.offsetWidth;
+  sbMenu.style.top = `${Math.round(r.bottom + 6)}px`;
+  sbMenu.style.left = `${Math.round(Math.min(Math.max(10, r.right - w), innerWidth - w - 10))}px`;
+  sbBtn.setAttribute("aria-expanded", "true");
+}
+function closeSbMenu() {
+  sbMenu.hidden = true;
+  sbBtn.setAttribute("aria-expanded", "false");
+}
+
+sbBtn.onclick = () => {
+  if (!sbOn() || sbLocked) return openSbSettings();
+  sbMenu.hidden ? openSbMenu() : closeSbMenu();
+};
+// a tap anywhere else, or Escape, puts it away
+document.addEventListener("pointerdown", e => {
+  if (!sbMenu.hidden && !sbMenu.contains(e.target) && !sbBtn.contains(e.target)) closeSbMenu();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !sbMenu.hidden) closeSbMenu(); });
+addEventListener("resize", () => { if (!sbMenu.hidden) closeSbMenu(); });
+
+boardBtn.onclick = () => { closeSbMenu(); openBoard(); };
 document.getElementById("boardBack").onclick = closeBoard;
 document.getElementById("boardSettings").onclick = openSbSettings;
 

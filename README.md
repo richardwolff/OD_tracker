@@ -85,8 +85,11 @@ address (a DHCP reservation on the router) so the stations keep finding it.
 
 On each station Pi, `raspberry-pi-setup.sh` asks for the station's name, that
 address and the password. You can also tap **Station** in OD Tracker's header
-and fill them in there. Once it's set up, that button shows who is logged on and
-opens the board, where people:
+and fill them in there. Once it's set up, that button shows who is logged on
+here. Its dot is green when someone is, orange when nobody is, and red when the
+board can't be reached. Tapping it drops down the list of names: tap yours to
+log on, **Log off** to leave, or **+ Add name**. The **Stations** button next
+to it opens the board, where people:
 
 - **log on** by tapping their name (adding it the first time). You can be
   logged on at several stations at once; **Log off** leaves only that station.
