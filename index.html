@@ -446,7 +446,7 @@ dialog::backdrop { background: rgba(0,0,0,.4); backdrop-filter: blur(2px); }
   display: block; font-size: 11.5px; font-weight: 600; color: var(--text-muted);
   text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px;
 }
-.field input[type="text"], .field input[type="number"] {
+.field input[type="text"], .field input[type="number"], .field input[type="password"] {
   width: 100%; font: inherit; font-size: 15px;
   color: var(--text-primary); background: var(--page);
   border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
@@ -505,7 +505,7 @@ html.touch td { padding: 13px 10px; }
 html.touch input[type="checkbox"] { width: 26px; height: 26px; }
 html.touch .row-btn { min-width: 44px; min-height: 44px; font-size: 20px; border-radius: 10px; }
 
-html.touch .field input[type="text"], html.touch .field input[type="number"] {
+html.touch .field input[type="text"], html.touch .field input[type="number"], html.touch .field input[type="password"] {
   font-size: 18px; padding: 13px 14px;      /* ≥16px stops zoom-on-focus */
 }
 html.touch textarea.notes { font-size: 16px; min-height: 150px; }
@@ -763,6 +763,58 @@ dialog { max-height: calc(100dvh - 16px); }
   .hint { font-size: 11.5px; }
 }
 
+/* ---------- Station Board ----------
+   The header button says who is logged on at this station (or offers to log
+   on); it opens the board, served by the Station Board server, over the app.
+   Requests sent to people here stack in the upper right of the screen, over
+   everything, until someone taps "Got it". See station_board/. */
+.station-btn { display: inline-flex; align-items: center; gap: 7px; max-width: 34vw; }
+.station-btn .sb-who { overflow: hidden; text-overflow: ellipsis; }
+.sb-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.sb-dot.on { background: var(--good); }
+.sb-dot.off { background: var(--critical); }
+
+.board-overlay {
+  position: fixed; inset: 0; z-index: 30;
+  display: flex; flex-direction: column; background: var(--page);
+}
+.board-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+}
+.board-bar h2 { font-size: 16px; font-weight: 650; margin: 0; }
+.board-bar h2 span { color: var(--text-muted); font-weight: 400; }
+.board-overlay iframe { flex: 1; width: 100%; border: 0; background: var(--page); }
+.board-down { margin: auto; max-width: 440px; text-align: center; color: var(--text-secondary); padding: 20px; }
+
+/* Fixed to the viewport wherever it sits in the DOM: while a dialog is open the
+   stack is moved inside it (see sbPlaceStack), and still lands top right. */
+#msgStack {
+  position: fixed; top: 10px; right: 10px; z-index: 40;
+  display: flex; flex-direction: column; gap: 8px;
+  width: min(340px, calc(100vw - 20px));
+  pointer-events: none;
+}
+#msgStack:empty { display: none; }
+.sb-msg {
+  pointer-events: auto;
+  background: var(--surface); color: var(--text-primary);
+  border: 1px solid var(--border); border-left: 4px solid var(--warning);
+  border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.22);
+  padding: 8px 10px 8px 12px; animation: sb-in .25s ease-out;
+}
+.sb-msg-head { font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; }
+.sb-msg-head b { color: var(--text-primary); }
+.sb-msg-head time { margin-left: auto; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.sb-msg-text { font-size: 15px; line-height: 1.35; margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* the button sits beside the text, not under it: on the Pi's short panel every
+   row a request takes is a row of the header it covers */
+.sb-msg-body { display: flex; align-items: center; gap: 10px; }
+.sb-msg-body > div { flex: 1; min-width: 0; }
+.sb-msg-actions { flex: none; }
+html.touch .sb-msg-actions button { min-height: 42px; }
+@keyframes sb-in { from { opacity: 0; transform: translateY(-8px); } }
+
 </style>
 </head>
 <body>
@@ -781,6 +833,7 @@ dialog { max-height: calc(100dvh - 16px); }
   <button id="exportAll" class="ghost" hidden
           title="Download the readings and the metadata report together, as a zip">Export project</button>
   <button id="colsBtn" class="icon ghost" title="Cards per row" aria-label="Cards per row" hidden>▦</button>
+  <button id="stationBtn" class="ghost station-btn" title="Station Board"><span class="sb-dot" id="sbDot"></span><span class="sb-who" id="sbWho">Station</span></button>
   <button id="fsBtn" class="icon ghost" title="Full screen" aria-label="Enter full screen">⛶</button>
   <button id="themeBtn" class="icon ghost" title="Toggle light / dark" aria-label="Toggle light / dark">◐</button>
   <button id="importProjBtn" class="ghost"
@@ -1060,6 +1113,52 @@ dialog { max-height: calc(100dvh - 16px); }
       <button type="button" class="primary" id="confirmOk" style="background:var(--critical)">Delete</button>
     </div>
   </div>
+</dialog>
+
+<!-- Station Board: the board itself, opened over the app -->
+<div class="board-overlay" id="boardOverlay" hidden>
+  <div class="board-bar">
+    <button type="button" class="ghost" id="boardBack">← OD Tracker</button>
+    <h2 id="boardTitle">Station Board</h2>
+    <div class="spacer"></div>
+    <button type="button" class="ghost" id="boardSettings">Settings</button>
+  </div>
+  <iframe id="boardFrame" title="Station Board"></iframe>
+  <div class="board-down" id="boardDown" hidden>
+    <p><strong>Can't reach the Station Board server.</strong></p>
+    <p id="boardDownWhy"></p>
+  </div>
+</div>
+
+<!-- requests for the people at this station, upper right -->
+<div id="msgStack" aria-live="polite"></div>
+
+<!-- Station Board: which station this is, and where the board server runs -->
+<dialog id="sbDlg">
+  <form method="dialog" class="dlg-body" id="sbForm">
+    <p class="dlg-title">Station Board</p>
+    <p class="dlg-sub">Name this station and point it at the board server, so people can log on here and be sent requests.</p>
+    <div class="field">
+      <label for="sbName">This station</label>
+      <input type="text" id="sbName" autocomplete="off" maxlength="40" placeholder="Bench 3" required>
+    </div>
+    <div class="field">
+      <label for="sbServer">Board server address</label>
+      <input type="text" id="sbServer" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.20:8765" required>
+      <div class="help">Printed by <code>station_board/server.py</code> when it starts.</div>
+    </div>
+    <div class="field">
+      <label for="sbPw">Board password</label>
+      <input type="password" id="sbPw" autocomplete="off" placeholder="Only if the board has one">
+      <div class="help" id="sbPwHelp">Checked with the server, then traded for a key; the password itself is not kept.</div>
+    </div>
+    <div class="err" id="sbErr"></div>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="sbClear" style="margin-right:auto">Turn off</button>
+      <button type="button" class="ghost" id="sbCancel">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
 </dialog>
 
 <script>
@@ -4213,6 +4312,246 @@ addEventListener("storage", e => {
     if (incoming && Array.isArray(incoming.cultures)) { state = incoming; renderAll(); }
   } catch (err) { /* ignore a malformed write from another tab */ }
 });
+
+/* ============================================================
+   Station Board — who is at this station, and requests for them
+   The board lives on a separate server on the lab wifi (station_board/). This
+   page only names the station it runs on, polls the server for the people
+   logged on here and the requests sent to them, and shows those requests in
+   the upper right. ?station=<name>&board=<address> in the URL sets both, which
+   is how raspberry-pi-setup.sh configures a kiosk; they are then remembered.
+   A board with a password wants the access key it hands out for it, sent as
+   X-Board-Key; ?boardkey=<key> passes that in too. The password is never kept.
+   ============================================================ */
+
+const SB_KEY = STORE_KEY + ".station";
+const SB_POLL_MS = 4000;
+
+const sbBtn     = document.getElementById("stationBtn");
+const sbDot     = document.getElementById("sbDot");
+const sbWho     = document.getElementById("sbWho");
+const sbDlg     = document.getElementById("sbDlg");
+const sbForm    = document.getElementById("sbForm");
+const msgStack  = document.getElementById("msgStack");
+const boardEl   = document.getElementById("boardOverlay");
+const boardFrame = document.getElementById("boardFrame");
+
+// "192.168.1.20:8765/" -> "http://192.168.1.20:8765": what people type, made fetchable
+const sbNormServer = s => {
+  s = String(s || "").trim().replace(/\/+$/, "");
+  if (s && !/^https?:\/\//i.test(s)) s = "http://" + s;
+  return s;
+};
+
+let sb = (() => {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(SB_KEY)) || {}; } catch (e) { /* none yet */ }
+  const q = new URLSearchParams(location.search);
+  const name = (q.get("station") ?? saved.name ?? "").trim().slice(0, 40);
+  const server = sbNormServer(q.get("board") ?? saved.server);
+  const key = q.get("boardkey") ?? saved.key ?? "";
+  if (q.has("station") || q.has("board") || q.has("boardkey")) {
+    try { localStorage.setItem(SB_KEY, JSON.stringify({ name, server, key })); } catch (e) { /* kept for this session */ }
+  }
+  return { name, server, key };
+})();
+const sbHeaders = (extra = {}) => (sb.key ? { ...extra, "X-Board-Key": sb.key } : extra);
+const sbOn = () => !!(sb.name && sb.server);
+
+let sbState = null;      // last answer from the server, or null
+let sbOnline = false;
+let sbTried = false;     // a poll has finished, so sbOnline means something
+let sbLocked = false;    // the server answered, but wants a password this station lacks
+let sbTimer = null;
+
+async function sbPoll() {
+  if (!sbOn()) return;
+  const asked = sb;      // settings changed mid-flight: drop the old station's answer
+  try {
+    const r = await fetch(`${sb.server}/api/state?station=${encodeURIComponent(sb.name)}`,
+      { cache: "no-store", headers: sbHeaders(),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(3500) : undefined });
+    if (asked !== sb) return;
+    sbLocked = r.status === 401;
+    if (sbLocked) { sbState = null; sbOnline = true; }
+    else {
+      if (!r.ok) throw new Error(r.status);
+      const data = await r.json();
+      if (asked !== sb) return;
+      sbState = data;
+      sbOnline = true;
+    }
+  } catch (err) {
+    if (asked !== sb) return;
+    sbOnline = false;     // the last requests stay up: they were real, and still unanswered
+  }
+  sbTried = true;
+  sbRender();
+}
+
+function sbStart() {
+  clearInterval(sbTimer);
+  sbState = null; sbOnline = false; sbTried = false; sbLocked = false;
+  msgStack.innerHTML = ""; delete msgStack.dataset.ids;
+  sbRender();
+  if (sbOn()) { sbPoll(); sbTimer = setInterval(sbPoll, SB_POLL_MS); }
+}
+
+function sbRender() {
+  // the header button: who is here, or the way to log on
+  if (!sbOn()) {
+    sbDot.className = "sb-dot";
+    sbWho.textContent = "Station";
+    sbBtn.title = "Set up the Station Board for this screen";
+  } else if (sbLocked) {
+    sbDot.className = "sb-dot off";
+    sbWho.textContent = "Password?";
+    sbBtn.title = `${sb.name}: the board needs a password — tap to enter it`;
+  } else {
+    const mine = sbState && sbState.stations.find(s => s.name === sb.name);
+    const here = mine ? mine.people.map(p => p.name) : [];
+    sbDot.className = "sb-dot " + (sbOnline ? "on" : "off");
+    sbWho.textContent = !sbState ? sb.name : here.length ? here.join(", ") : "Log on";
+    sbBtn.title = `${sb.name}: ${sbOnline
+      ? (here.length ? `${here.join(", ")} logged on` : "nobody logged on")
+      : "can't reach the board server"} — open the Station Board`;
+  }
+
+  // the requests, upper right; rebuilt only when the set changes, so one
+  // arriving does not replay the others' entrance
+  const msgs = sbState && sbState.messages ? sbState.messages : [];
+  const ids = msgs.map(m => m.id).join();
+  if (msgStack.dataset.ids === ids) return;
+  msgStack.dataset.ids = ids;
+  const hhmm = ms => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  msgStack.innerHTML = msgs.map(m => `
+    <div class="sb-msg" role="status">
+      <div class="sb-msg-body">
+        <div><div class="sb-msg-head"><span><b>${esc(m.from)}</b> → ${esc(m.to)}</span><time>${hhmm(m.at)}</time></div>
+          <div class="sb-msg-text">${esc(m.text)}</div></div>
+        <div class="sb-msg-actions"><button type="button" data-ack="${esc(m.id)}">Got it</button></div>
+      </div>
+    </div>`).join("");
+  msgStack.querySelectorAll("[data-ack]").forEach(b => { b.onclick = () => sbAck(b.dataset.ack, b); });
+}
+
+async function sbAck(id, btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${sb.server}/api/messages/ack`, {
+      method: "POST", headers: sbHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ id })
+    });
+    if (!r.ok) throw new Error(r.status);
+    // gone at once here; the next poll confirms it, and clears it on other screens
+    if (sbState) sbState.messages = sbState.messages.filter(m => m.id !== id);
+    sbRender();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = "Retry — board offline";
+  }
+}
+
+/* An open modal dialog sits in the browser's top layer, above any z-index, and
+   makes everything outside itself inert — so a request in the page would be
+   hidden behind it, or drawn over it by a popover yet impossible to tap. Moved
+   inside the open dialog, the stack is above it and still answers taps; it
+   goes back to the page when the dialog closes. */
+function sbPlaceStack() {
+  const modal = [...document.querySelectorAll("dialog")].filter(d => d.matches(":modal")).pop();
+  const home = modal || document.body;
+  if (msgStack.parentElement !== home) home.appendChild(msgStack);
+}
+new MutationObserver(sbPlaceStack)
+  .observe(document.body, { subtree: true, attributes: true, attributeFilter: ["open"] });
+
+/* ---------- the board, over the app ---------- */
+function openBoard() {
+  if (!sbOn() || sbLocked) return openSbSettings();
+  document.getElementById("boardTitle").innerHTML = `Station Board <span>· ${esc(sb.name)}</span>`;
+  // before the first poll has answered, give the server the benefit of the doubt
+  const down = sbTried && !sbOnline;
+  const touch = document.documentElement.classList.contains("touch") ? 1 : 0;
+  const theme = document.documentElement.dataset.theme || "";
+  const src = `${sb.server}/?station=${encodeURIComponent(sb.name)}&embed=1&touch=${touch}`
+            + (theme ? `&theme=${theme}` : "")
+            + (sb.key ? `#key=${encodeURIComponent(sb.key)}` : "");   // a fragment never reaches a server log
+  boardFrame.hidden = down;
+  document.getElementById("boardDown").hidden = !down;
+  document.getElementById("boardDownWhy").textContent =
+    `Tried ${sb.server}. Check that the server is running and that this station is on the same wifi, or fix the address in Settings.`;
+  if (!down && boardFrame.dataset.src !== src) { boardFrame.src = src; boardFrame.dataset.src = src; }
+  boardEl.hidden = false;
+}
+
+function closeBoard() {
+  boardEl.hidden = true;
+  sbPoll();      // a log-on made on the board shows in the header straight away
+}
+
+sbBtn.onclick = openBoard;
+document.getElementById("boardBack").onclick = closeBoard;
+document.getElementById("boardSettings").onclick = openSbSettings;
+
+/* ---------- settings ---------- */
+function openSbSettings() {
+  document.getElementById("sbName").value = sb.name;
+  document.getElementById("sbServer").value = sb.server;
+  document.getElementById("sbPw").value = "";
+  document.getElementById("sbPw").placeholder = sbLocked ? "Password"
+    : sb.key ? "Saved — leave blank to keep" : "Only if the board has one";
+  document.getElementById("sbErr").textContent = sbLocked
+    ? "The board needs a password, or it has changed. Enter it below." : "";
+  document.getElementById("sbClear").hidden = !sbOn();
+  sbDlg.showModal();
+}
+
+function sbSave(next) {
+  sb = next;
+  try { localStorage.setItem(SB_KEY, JSON.stringify(sb)); } catch (e) { /* kept for this session */ }
+  delete boardFrame.dataset.src;
+  boardFrame.removeAttribute("src");
+  boardEl.hidden = true;
+  sbStart();
+}
+
+/* A typed password is checked before anything is saved, so a mistake shows
+   here rather than as a red dot later. With none typed, the saved key stays
+   while the server does, and is dropped with it. */
+document.getElementById("sbForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const err = document.getElementById("sbErr");
+  const name = document.getElementById("sbName").value.trim().replace(/\s+/g, " ");
+  const server = sbNormServer(document.getElementById("sbServer").value);
+  const password = document.getElementById("sbPw").value;
+  if (!name || !server) { err.textContent = "A station name and the server address are both needed."; return; }
+
+  let key = server === sb.server ? sb.key : "";
+  if (password) {
+    const ok = sbForm.querySelector('[type="submit"]');
+    ok.disabled = true; err.textContent = "Checking…";
+    try {
+      const r = await fetch(`${server}/api/login`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { err.textContent = data.error || `The server said ${r.status}.`; return; }
+      key = data.key;
+    } catch (x) {
+      err.textContent = `Can't reach ${server}. Check the address, and that this station is on the network.`;
+      return;
+    } finally {
+      ok.disabled = false;
+    }
+  }
+  document.getElementById("sbPw").value = "";
+  sbDlg.close();
+  sbSave({ name: name.slice(0, 40), server, key });
+});
+document.getElementById("sbCancel").onclick = () => sbDlg.close();
+document.getElementById("sbClear").onclick = () => { sbDlg.close(); sbSave({ name: "", server: "", key: "" }); };
+
+sbStart();
 
 /* ============================================================
    Demo project — ?demo=1
