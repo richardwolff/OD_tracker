@@ -91,8 +91,10 @@ opens the board, where people:
 - **log on** by tapping their name (adding it the first time). You can be
   logged on at several stations at once; **Log off** leaves only that station.
 - see every station, who is there, and since when
-- send a **request** to anyone logged on, from anyone on the list (wherever
-  they are logged on), using a one-tap message or their own text
+- send a **request** to anyone logged on, using a one-tap message or their own
+  text. Nobody is asked who's writing: it's whoever is logged on at that
+  station (the most recent, if there are several), or whoever the device is
+  set to with **I'm …**. **Change** sends as someone else on the list.
 - **chat**: each conversation keeps its history, with one-tap replies ("On my
   way", "Give me 5 minutes"…). Replying counts as Got it.
 

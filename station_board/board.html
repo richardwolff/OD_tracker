@@ -339,7 +339,7 @@ html.touch .msg-actions button { min-height: 40px; }
 <dialog id="meDlg">
   <div class="dlg-body">
     <p class="dlg-title">Who are you?</p>
-    <p class="dlg-sub">Messages to you will pop up on this device, as they do at a station you're logged on at. It's remembered here.</p>
+    <p class="dlg-sub" id="meSub"></p>
     <div class="names" id="meNames"></div>
     <div class="dlg-actions">
       <button class="ghost" id="meNone">Nobody — just looking</button>
@@ -414,6 +414,15 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const clock = ms => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const stationsOf = name => (board && board.people.find(p => p.name === name) || {}).stations || [];
+/* Rebuild a part of the page only when its content changed. The board is
+   re-read every few seconds, and replacing a button between a finger going
+   down and coming up loses the tap. Returns whether it did. */
+const setHTML = (el, html) => {
+  if (el.dataset.html === html) return false;
+  el.dataset.html = html;
+  el.innerHTML = html;
+  return true;
+};
 const listOf = xs => xs.length <= 1 ? xs.join("") : xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1];
 
 /* ---------- server ---------- */
@@ -522,22 +531,24 @@ function render() {
   $("hereSec").hidden = !STATION;
   if (STATION) {
     const here = mine ? mine.people : [];
-    $("here").innerHTML = (here.length
+    const changed = setHTML($("here"), (here.length
       ? here.map(p => `<span class="person-chip">${esc(p.name)}
           <span class="since">since ${clock(p.since)}</span>
           <button data-logoff="${esc(p.name)}">Log off</button></span>`).join("")
       : `<span class="nobody">Nobody is logged on at ${esc(STATION)}.</span>`)
-      + `<div class="spacer"></div><button class="primary" id="logonBtn">Log on</button>`;
-    $("logonBtn").onclick = openLogon;
-    $("here").querySelectorAll("[data-logoff]").forEach(b => {
-      b.onclick = () => act("/api/logoff", { person: b.dataset.logoff, station: STATION });
-    });
+      + `<div class="spacer"></div><button class="primary" id="logonBtn">Log on</button>`);
+    if (changed) {
+      $("logonBtn").onclick = () => openLogon();
+      $("here").querySelectorAll("[data-logoff]").forEach(b => {
+        b.onclick = () => act("/api/logoff", { person: b.dataset.logoff, station: STATION });
+      });
+    }
   }
 
   // every station; this one first, since it is the one in front of you
   const list = board.stations.slice().sort((a, b) => (b.name === STATION) - (a.name === STATION));
   $("emptyBoard").hidden = list.length > 0;
-  $("stations").innerHTML = list.map(s => `
+  const changed = setHTML($("stations"), list.map(s => `
     <div class="station ${s.name === STATION ? "mine" : ""}">
       <div class="st-head">
         <span class="dot ${s.online ? "on" : ""}" title="${s.online ? "Station is on" : "Station not heard from"}"></span>
@@ -551,8 +562,8 @@ function render() {
           <span class="who"><b>${esc(p.name)}</b><small>here since ${clock(p.since)}${also.length ? ` · also at ${esc(listOf(also))}` : ""}</small></span>
           <button data-msg="${esc(p.name)}">Request</button>
         </div>`; }).join("") : `<div class="st-empty">Nobody here</div>`}
-    </div>`).join("");
-  $("stations").querySelectorAll("[data-msg]").forEach(b => { b.onclick = () => openChat(b.dataset.msg); });
+    </div>`).join(""));
+  if (changed) $("stations").querySelectorAll("[data-msg]").forEach(b => { b.onclick = () => openChat(b.dataset.msg); });
 
   renderMessages();
   if ($("logonDlg").open) renderLogonNames();
@@ -589,11 +600,11 @@ function renderMessages() {
 }
 
 /* ---------- log on ---------- */
-function openLogon() {
+function openLogon(why = "") {
   removing = false;
   $("logonErr").textContent = "";
   $("newName").value = "";
-  $("logonSub").textContent = `Tap your name to log on at ${STATION}.`;
+  $("logonSub").textContent = why || `Tap your name to log on at ${STATION}.`;
   renderLogonNames();
   $("logonDlg").showModal();
 }
@@ -601,7 +612,7 @@ function openLogon() {
 function renderLogonNames() {
   const people = board ? board.people : [];
   $("editNames").textContent = removing ? "Done removing" : "Remove names…";
-  $("logonNames").innerHTML = people.length ? people.map(p => {
+  const changed = setHTML($("logonNames"), people.length ? people.map(p => {
     // logging on here adds this station; it doesn't take them off the others
     const here = p.stations.includes(STATION);
     const elsewhere = p.stations.filter(x => x !== STATION);
@@ -609,41 +620,68 @@ function renderLogonNames() {
     return `<button data-name="${esc(p.name)}" ${here && !removing ? "disabled" : ""}>
       ${removing ? `<span class="x">✕</span> ` : ""}${esc(p.name)}${where && !removing ? `<small>${where}</small>` : ""}
     </button>`;
-  }).join("") : `<p class="dlg-sub" style="grid-column:1/-1;margin:0">No names yet — add yours below.</p>`;
+  }).join("") : `<p class="dlg-sub" style="grid-column:1/-1;margin:0">No names yet — add yours below.</p>`);
+  if (!changed) return;
 
   $("logonNames").querySelectorAll("[data-name]").forEach(b => {
     b.onclick = async () => {
       const name = b.dataset.name;
       if (removing) { await act("/api/people/remove", { name }, $("logonErr")); return; }
-      if (await act("/api/logon", { person: name, station: STATION }, $("logonErr"))) $("logonDlg").close();
+      if (await act("/api/logon", { person: name, station: STATION }, $("logonErr"))) loggedOn(name);
     };
   });
 }
 
+// a log-on asked for by a message goes straight on to that message, from them
+function loggedOn(name) {
+  $("logonDlg").close();
+  const to = resumeChatWith;
+  resumeChatWith = null;
+  if (to && to !== name) openChat(to, name);
+}
+$("logonDlg").addEventListener("cancel", () => { resumeChatWith = null; });
+
 $("editNames").onclick = () => { removing = !removing; renderLogonNames(); };
-$("logonCancel").onclick = () => $("logonDlg").close();
+$("logonCancel").onclick = () => { resumeChatWith = null; $("logonDlg").close(); };
 $("addName").onclick = async () => {
   const name = $("newName").value.trim();
   if (!name) { $("logonErr").textContent = "Type your name first."; $("newName").focus(); return; }
-  if (await act("/api/logon", { person: name, station: STATION }, $("logonErr"))) $("logonDlg").close();
+  if (await act("/api/logon", { person: name, station: STATION }, $("logonErr"))) loggedOn(name);
 };
 $("newName").addEventListener("keydown", e => { if (e.key === "Enter") $("addName").click(); });
 
 /* ---------- conversations ----------
    One dialog for both a new request and the replies to it: the thread between
-   the two people so far, one-tap messages, and a box for anything else. The
-   sender can be anyone on the list, wherever they're logged on; it starts as
-   whoever is logged on here (when that is one person) or whoever this device
-   is, and a Reply is always from the person the message was for. */
-function openChat(to, from = null) {
-  chatTo = to;
-  if (from === null) {
+   the two people so far, one-tap messages, and a box for anything else. Nobody
+   is asked who is writing: it is whoever is logged on here (see
+   assumedSender), and a Reply is from the person the message was for. Change
+   can still pick anyone on the list, wherever they're logged on. */
+/* Who a new message is from, without asking: at a station, whoever logged on
+   there most recently; on a phone or laptop, whoever it says it is. */
+function assumedSender(to) {
+  if (STATION) {
     const mine = board.stations.find(s => s.name === STATION);
     const here = mine ? mine.people.map(p => p.name).filter(n => n !== to) : [];
-    from = here.length === 1 ? here[0] : (ME && ME !== to ? ME : null);
+    return here.length ? here[here.length - 1] : null;   // the server sends them oldest first
   }
+  return ME && ME !== to ? ME : null;
+}
+
+/* With nobody to send as, the way forward is to say who you are — log on here,
+   or tell this device — and the message to `to` carries on from there. */
+let resumeChatWith = null;
+
+function openChat(to, from = null) {
+  from = from || assumedSender(to);
+  if (!from) {
+    resumeChatWith = to;
+    if (STATION) openLogon(`Log on to send ${to} a message.`);
+    else openMe(`Tell this device who you are to send ${to} a message.`);
+    return;
+  }
+  chatTo = to;
   chatFrom = from;
-  pickingFrom = !from;
+  pickingFrom = false;
   thread = [];
   $("msgText").value = "";
   $("msgErr").textContent = "";
@@ -680,7 +718,7 @@ function renderChat() {
   $("chatTitle").textContent = chatTo;
   updateChatSub();
 
-  // the sender: a single line once chosen, the full list while choosing
+  // the sender: assumed, shown on one line, and only listed out if Change is tapped
   $("fromLine").hidden = pickingFrom;
   $("fromLine").innerHTML = chatFrom
     ? `From <b>${esc(chatFrom)}</b> <button class="ghost" id="fromChange" type="button">Change</button>` : "";
@@ -693,7 +731,7 @@ function renderChat() {
     // people here first, then this device's owner: they are almost always the sender
     const rank = n => (here.includes(n) ? 2 : 0) + (n === ME ? 1 : 0);
     const names = board.people.map(p => p.name).filter(n => n !== chatTo).sort((a, b) => rank(b) - rank(a));
-    $("fromNames").innerHTML = `<span class="label" style="grid-column:1/-1;margin:0">Who's writing?</span>`
+    $("fromNames").innerHTML = `<span class="label" style="grid-column:1/-1;margin:0">Send as</span>`
       + (names.length ? names.map(n => {
           const at = stationsOf(n);
           const note = here.includes(n) ? "at this station" : at.length ? `at ${esc(listOf(at))}` : "";
@@ -733,7 +771,6 @@ $("chatClose").onclick = () => $("chatDlg").close();
 $("chatDlg").addEventListener("close", () => { chatTo = chatFrom = null; thread = []; });
 $("msgSend").onclick = async () => {
   const text = $("msgText").value.trim();
-  if (!chatFrom) { $("msgErr").textContent = "Pick who's writing."; return; }
   if (!text) { $("msgErr").textContent = "Pick a message or write one."; return; }
   $("msgSend").disabled = true;
   const ok = await act("/api/messages", { from: chatFrom, to: chatTo, text }, $("msgErr"));
@@ -756,7 +793,8 @@ function openChatFromUrl() {
 }
 
 /* ---------- who this device is for ---------- */
-function openMe() {
+function openMe(why = "") {
+  $("meSub").textContent = why || "Messages to you will pop up on this device, as they do at a station you're logged on at. It's remembered here.";
   $("meNames").innerHTML = board.people.length
     ? board.people.map(p => `<button type="button" data-me="${esc(p.name)}" class="${p.name === ME ? "picked" : ""}">${esc(p.name)}</button>`).join("")
     : `<p class="dlg-sub" style="grid-column:1/-1;margin:0">No names yet — log on at a station first.</p>`;
@@ -768,10 +806,14 @@ function setMe(name) {
   try { name ? localStorage.setItem(ME_STORE, name) : localStorage.removeItem(ME_STORE); } catch (e) { /* this visit only */ }
   $("meDlg").close();
   refresh();
+  const to = resumeChatWith;
+  resumeChatWith = null;
+  if (to && name && to !== name) openChat(to, name);
 }
 $("meBtn").onclick = () => board && openMe();
 $("meNone").onclick = () => setMe("");
-$("meCancel").onclick = () => $("meDlg").close();
+$("meCancel").onclick = () => { resumeChatWith = null; $("meDlg").close(); };
+$("meDlg").addEventListener("cancel", () => { resumeChatWith = null; });
 
 /* ---------- go ---------- */
 refresh();
