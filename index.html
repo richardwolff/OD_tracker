@@ -811,7 +811,7 @@ dialog { max-height: calc(100dvh - 16px); }
    row a request takes is a row of the header it covers */
 .sb-msg-body { display: flex; align-items: center; gap: 10px; }
 .sb-msg-body > div { flex: 1; min-width: 0; }
-.sb-msg-actions { flex: none; }
+.sb-msg-actions { flex: none; display: flex; flex-direction: column; gap: 6px; }
 html.touch .sb-msg-actions button { min-height: 42px; }
 @keyframes sb-in { from { opacity: 0; transform: translateY(-8px); } }
 
@@ -4429,10 +4429,19 @@ function sbRender() {
       <div class="sb-msg-body">
         <div><div class="sb-msg-head"><span><b>${esc(m.from)}</b> → ${esc(m.to)}</span><time>${hhmm(m.at)}</time></div>
           <div class="sb-msg-text">${esc(m.text)}</div></div>
-        <div class="sb-msg-actions"><button type="button" data-ack="${esc(m.id)}">Got it</button></div>
+        <div class="sb-msg-actions">
+          <button type="button" data-ack="${esc(m.id)}">Got it</button>
+          <button type="button" data-reply="${esc(m.id)}">Reply</button>
+        </div>
       </div>
     </div>`).join("");
   msgStack.querySelectorAll("[data-ack]").forEach(b => { b.onclick = () => sbAck(b.dataset.ack, b); });
+  // Reply opens the board on the conversation, writing as the person it was for;
+  // the reply landing is what marks the message answered
+  msgStack.querySelectorAll("[data-reply]").forEach(b => {
+    const m = msgs.find(x => x.id === b.dataset.reply);
+    b.onclick = () => { if (sbDlg.open) sbDlg.close(); openBoard({ chat: m.from, as: m.to }); };
+  });
 }
 
 async function sbAck(id, btn) {
@@ -4465,15 +4474,18 @@ new MutationObserver(sbPlaceStack)
   .observe(document.body, { subtree: true, attributes: true, attributeFilter: ["open"] });
 
 /* ---------- the board, over the app ---------- */
-function openBoard() {
+function openBoard(chat = null) {
   if (!sbOn() || sbLocked) return openSbSettings();
   document.getElementById("boardTitle").innerHTML = `Station Board <span>· ${esc(sb.name)}</span>`;
   // before the first poll has answered, give the server the benefit of the doubt
   const down = sbTried && !sbOnline;
   const touch = document.documentElement.classList.contains("touch") ? 1 : 0;
   const theme = document.documentElement.dataset.theme || "";
+  // a reply opens straight onto the conversation; the stamp makes a second
+  // Reply to the same person still reload the frame, and so open it again
   const src = `${sb.server}/?station=${encodeURIComponent(sb.name)}&embed=1&touch=${touch}`
             + (theme ? `&theme=${theme}` : "")
+            + (chat ? `&chat=${encodeURIComponent(chat.chat)}&as=${encodeURIComponent(chat.as)}&n=${Date.now()}` : "")
             + (sb.key ? `#key=${encodeURIComponent(sb.key)}` : "");   // a fragment never reaches a server log
   boardFrame.hidden = down;
   document.getElementById("boardDown").hidden = !down;
@@ -4488,7 +4500,7 @@ function closeBoard() {
   sbPoll();      // a log-on made on the board shows in the header straight away
 }
 
-sbBtn.onclick = openBoard;
+sbBtn.onclick = () => openBoard();
 document.getElementById("boardBack").onclick = closeBoard;
 document.getElementById("boardSettings").onclick = openSbSettings;
 

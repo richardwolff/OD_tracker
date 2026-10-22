@@ -64,11 +64,13 @@ exported from a browser or the Pi. Uninstalling leaves that data in place.
 
 ## Station Board
 
-Lets people mark which station they are at, see who is at every other
-station, and send them a request ("Can you come over?", "Your samples are
-ready"). A request pops up in the upper right of OD Tracker on the station
-that person is logged on at, and stays there until someone taps **Got it**.
-If they log on somewhere else before then, it follows them.
+Lets people mark which stations they are at, see who is at every other
+station, send them a request ("Can you come over?", "Your samples are
+ready"), and chat about it. A message pops up in the upper right of OD Tracker
+at every station its person is logged on at. It stays there until someone taps
+**Got it**, or **Reply**, which opens the conversation with the sender. A
+message to someone who isn't logged on anywhere waits, and pops up when they
+next log on.
 
 One machine on the shared wifi hosts the board; a Pi is plenty. On that machine:
 
@@ -86,13 +88,17 @@ address and the password. You can also tap **Station** in OD Tracker's header
 and fill them in there. Once it's set up, that button shows who is logged on and
 opens the board, where people:
 
-- **log on** by tapping their name (adding it the first time), and log off again
+- **log on** by tapping their name (adding it the first time). You can be
+  logged on at several stations at once; **Log off** leaves only that station.
 - see every station, who is there, and since when
-- send a **request** to anyone logged on, from a list of one-tap messages or
-  their own text
+- send a **request** to anyone logged on, from anyone on the list (wherever
+  they are logged on), using a one-tap message or their own text
+- **chat**: each conversation keeps its history, with one-tap replies ("On my
+  way", "Give me 5 minutes"…). Replying counts as Got it.
 
-The board also works in any browser at the server's address. Add
-`?station=<name>` to make that browser a station too.
+The board also works in any browser at the server's address. Tap **I'm …** to
+say who that phone or laptop is for, and messages to you pop up there too. Add
+`?station=<name>` to make that browser a station instead.
 
 ### Password
 
@@ -127,11 +133,17 @@ yes:
    account; open it and approve
 3. it prints the public address
 
+With Funnel on, point the stations at the `https://` address as well. It never
+changes, so the host needs no fixed lab address. And on a network that hands
+out 100.x addresses, as some campuses do, Tailscale's firewall blocks stations
+from reaching the lab address at all.
+
 Funnel needs a password, and the script won't turn it on without one.
 `--uninstall` turns Funnel off again, along with any other Tailscale Serve
 settings on that machine. The stations keep using the lab address.
 
-Log-ons left running are cleared after 12 hours (`--expire-hours`). The roster,
-log-ons and messages live in `station_board/board-state.json` on the host. On a
+Log-ons left running are cleared after 12 hours (`--expire-hours`), and
+answered messages are kept for a week as chat history. The roster, log-ons and
+messages live in `station_board/board-state.json` on the host. On a
 station the address and key passed by the kiosk launcher win at every boot, so
 to change them, re-run `raspberry-pi-setup.sh`.

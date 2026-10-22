@@ -176,12 +176,27 @@ if funnel_on; then
 fi
 
 say "Done"
-# the lab address: IPv4, and not Tailscale's 100.64.0.0/10, which only tailnet devices can reach
+# The lab address: IPv4 and not Tailscale's own. Tailscale is asked which one
+# is its own, not guessed from the 100.x range: some campus networks hand out
+# lab addresses from that same range.
+TSIP="$(tailscale ip -4 2>/dev/null || true)"
 ADDR="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9.]+$' \
-        | grep -vE '^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.' | head -1 || true)"
-info "Board on the lab network:  http://${ADDR:-<this machine>}:$PORT/"
-info "Address for each station:  http://${ADDR:-<this machine>}:$PORT"
-[[ -n "$PUBLIC" ]] && info "Board from anywhere:       $PUBLIC/"
+        | grep -vxF "${TSIP:-none}" | head -1 || true)"
+if [[ -n "$PUBLIC" ]]; then
+  info "Board from anywhere:       $PUBLIC/"
+  info "Address for each station:  $PUBLIC"
+  info "Lab-only address:          http://${ADDR:-<this machine>}:$PORT"
+  # Tailscale's firewall drops 100.64.0.0/10 traffic that didn't come through
+  # Tailscale, which on a campus network using that range includes the stations
+  case "$ADDR" in
+    100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*)
+      warn "This network uses 100.x addresses, like Tailscale, so Tailscale's firewall"
+      warn "will probably block stations from the lab-only address. Use the https one." ;;
+  esac
+else
+  info "Board on the lab network:  http://${ADDR:-<this machine>}:$PORT/"
+  info "Address for each station:  http://${ADDR:-<this machine>}:$PORT"
+fi
 info "Logs:                      journalctl --user -u station-board -f"
 warn "Give this Pi a fixed lab address (a DHCP reservation on the router) so the"
 warn "stations can keep finding it after a reboot."

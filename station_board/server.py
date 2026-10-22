@@ -25,9 +25,11 @@ can still act as anyone: it keeps strangers out, not colleagues honest.
 State
   people    the roster of names people tap to log on, kept sorted
   stations  every station that has checked in, with when it was last heard from
-  presence  person -> the station they are logged on at, and since when
-  messages  requests sent to a person; shown at the station they are at until
-            someone taps "Got it"
+  presence  person -> every station they are logged on at, and since when
+  messages  requests and the replies to them, between two people. One shows
+            at every station its person is logged on at (and on any device
+            that has said it is theirs) until it is answered: "Got it", or a
+            reply. Answered ones stay a week as the chat history.
 """
 
 import argparse
@@ -36,6 +38,7 @@ import hmac
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -50,8 +53,8 @@ HERE = Path(__file__).resolve().parent
 MAX_NAME = 40          # a person's or a station's name
 MAX_TEXT = 500         # one message
 ONLINE_MS = 20_000     # a station polls every few seconds; silent this long = offline
-KEEP_ACKED_MS = 24 * 3600_000   # acknowledged messages are kept a day, then dropped
-MAX_MESSAGES = 500
+KEEP_ACKED_MS = 7 * 24 * 3600_000   # answered messages stay a week, as chat history
+MAX_MESSAGES = 3000
 LOGIN_FAILS = 5        # wrong passwords allowed per minute before logins pause
 
 
@@ -75,7 +78,7 @@ class Board:
         self.lock = threading.Lock()
         self.people = []
         self.stations = {}
-        self.presence = {}
+        self.presence = {}     # person -> {station: since}
         self.messages = []
         self._load()
 
@@ -93,7 +96,10 @@ class Board:
             return
         self.people = [n for n in map(clean_name, data.get("people", [])) if n]
         self.stations = {k: v for k, v in data.get("stations", {}).items() if clean_name(k)}
-        self.presence = data.get("presence", {})
+        self.presence = {}
+        for person, v in data.get("presence", {}).items():
+            # files from before multi-station log-on held one {station, since}
+            self.presence[person] = {v["station"]: v["since"]} if "station" in v else dict(v)
         self.messages = data.get("messages", [])
 
     def _save(self):
@@ -108,10 +114,13 @@ class Board:
         """Forget log-ons nobody ended, and messages long since dealt with."""
         changed = False
         if self.expire_ms > 0:
-            for person, p in list(self.presence.items()):
-                if t - p["since"] > self.expire_ms:
+            for person, at in list(self.presence.items()):
+                for station, since in list(at.items()):
+                    if t - since > self.expire_ms:
+                        del at[station]
+                        changed = True
+                if not at:
                     del self.presence[person]
-                    changed = True
         keep = [m for m in self.messages
                 if not m.get("ackAt") or t - m["ackAt"] < KEEP_ACKED_MS]
         keep = keep[-MAX_MESSAGES:]
@@ -120,14 +129,16 @@ class Board:
             changed = True
         return changed
 
-    def _station_of_message(self, m):
-        """A message follows its person: it shows wherever they are logged on
-        now, and only falls back to where it was sent if they have left."""
-        p = self.presence.get(m["to"])
-        return p["station"] if p else m["station"]
+    def _add_to_roster(self, name):
+        if name.lower() not in (n.lower() for n in self.people):
+            self.people.append(name)
+            self.people.sort(key=str.lower)
 
     # ---------------------------------------------------------------- reads
-    def snapshot(self, station=None):
+    def snapshot(self, station=None, me=None):
+        """Everything a screen draws. A station also gets the unanswered
+        messages for everyone logged on at it; a device that has said who it
+        is for (me) gets that person's, wherever they are or aren't logged on."""
         t = now_ms()
         with self.lock:
             changed = self._tidy(t)
@@ -143,8 +154,8 @@ class Board:
 
             stations = []
             for name in sorted(self.stations, key=str.lower):
-                here = sorted(({"name": p, "since": v["since"]}
-                               for p, v in self.presence.items() if v["station"] == name),
+                here = sorted(({"name": p, "since": at[name]}
+                               for p, at in self.presence.items() if name in at),
                               key=lambda x: x["since"])
                 stations.append({"name": name, "people": here,
                                  "online": t - self.stations[name]["lastSeen"] < ONLINE_MS})
@@ -152,22 +163,28 @@ class Board:
                 "now": t,
                 "stations": stations,
                 "people": [{"name": n,
-                            "station": self.presence.get(n, {}).get("station"),
-                            "since": self.presence.get(n, {}).get("since")}
+                            "stations": sorted(self.presence.get(n, {}), key=str.lower)}
                            for n in self.people],
             }
-            if station:
+            if station or me:
+                here = {p for p, at in self.presence.items() if station in at} if station else set()
+                # a message shows wherever its person is logged on, and waits
+                # for them while they are logged on nowhere
                 out["messages"] = [m for m in self.messages
-                                   if not m.get("ackAt") and self._station_of_message(m) == station]
+                                   if not m.get("ackAt") and (m["to"] in here or m["to"] == me)]
             return out
+
+    def thread(self, a, b, limit=100):
+        """The conversation between two people, oldest first."""
+        with self.lock:
+            pair = {a, b}
+            return [m for m in self.messages if {m["from"], m["to"]} == pair][-limit:]
 
     # ---------------------------------------------------------------- writes
     def add_person(self, name):
         with self.lock:
-            if name.lower() not in (n.lower() for n in self.people):
-                self.people.append(name)
-                self.people.sort(key=str.lower)
-                self._save()
+            self._add_to_roster(name)
+            self._save()
 
     def remove_person(self, name):
         with self.lock:
@@ -176,27 +193,40 @@ class Board:
             self._save()
 
     def log_on(self, person, station):
+        """Adds a station: someone can be logged on at several at once, and a
+        second tap where they already are keeps the original time."""
         with self.lock:
-            if person not in self.people:
-                self.people.append(person)
-                self.people.sort(key=str.lower)
-            # one person, one station: logging on somewhere new moves them
-            self.presence[person] = {"station": station, "since": now_ms()}
+            self._add_to_roster(person)
+            self.presence.setdefault(person, {}).setdefault(station, now_ms())
             self.stations.setdefault(station, {"lastSeen": now_ms()})
             self._save()
 
-    def log_off(self, person):
+    def log_off(self, person, station=None):
+        """Off one station, or, with none named, off all of them."""
         with self.lock:
-            if self.presence.pop(person, None) is not None:
-                self._save()
+            at = self.presence.get(person)
+            if not at:
+                return
+            if station:
+                at.pop(station, None)
+            if not station or not at:
+                del self.presence[person]
+            self._save()
 
     def send(self, sender, to, text):
+        """Anyone on the roster can be written to, logged on or not: a reply
+        must reach someone who has since left. Writing to someone also
+        answers whatever they had sent you, so those stop showing."""
         with self.lock:
-            p = self.presence.get(to)
-            if not p:
+            if to not in self.people:
                 return None
+            self._add_to_roster(sender)
+            t = now_ms()
+            for m in self.messages:
+                if m["from"] == to and m["to"] == sender and not m.get("ackAt"):
+                    m["ackAt"] = t
             m = {"id": uuid.uuid4().hex[:12], "from": sender, "to": to,
-                 "station": p["station"], "text": text, "at": now_ms(), "ackAt": None}
+                 "text": text, "at": t, "ackAt": None}
             self.messages.append(m)
             self._save()
             return m
@@ -213,8 +243,10 @@ class Board:
     def remove_station(self, station):
         with self.lock:
             self.stations.pop(station, None)
-            for person in [p for p, v in self.presence.items() if v["station"] == station]:
-                del self.presence[person]
+            for person, at in list(self.presence.items()):
+                at.pop(station, None)
+                if not at:
+                    del self.presence[person]
             self._save()
 
 
@@ -334,11 +366,16 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self._error(HTTPStatus.NOT_FOUND, "board.html is missing beside server.py")
             return self._send(HTTPStatus.OK, body, "text/html; charset=utf-8")
-        if url.path == "/api/state":
+        if url.path in ("/api/state", "/api/thread"):
             if not self._authed():
                 return
-            station = clean_name(parse_qs(url.query).get("station", [""])[0])
-            return self._json(self.board.snapshot(station or None))
+            q = parse_qs(url.query)
+            arg = lambda k: clean_name(q.get(k, [""])[0]) or None
+            if url.path == "/api/thread":
+                if not arg("a") or not arg("b"):
+                    return self._error(HTTPStatus.BAD_REQUEST, "a and b are required")
+                return self._json({"messages": self.board.thread(arg("a"), arg("b"))})
+            return self._json(self.board.snapshot(arg("station"), arg("me")))
         self._error(HTTPStatus.NOT_FOUND, "not found")
 
     def do_POST(self):
@@ -373,14 +410,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.BAD_REQUEST, "person and station are required")
             b.log_on(person, station)
         elif path == "/api/logoff":
-            b.log_off(clean_name(data.get("person")))
+            b.log_off(clean_name(data.get("person")), clean_name(data.get("station")) or None)
         elif path == "/api/messages":
             sender, to = clean_name(data.get("from")), clean_name(data.get("to"))
             text = str(data.get("text") or "").strip()[:MAX_TEXT]
             if not sender or not to or not text:
                 return self._error(HTTPStatus.BAD_REQUEST, "from, to and text are required")
+            if sender == to:
+                return self._error(HTTPStatus.BAD_REQUEST, "pick someone else to write to")
             if not b.send(sender, to, text):
-                return self._error(HTTPStatus.CONFLICT, f"{to} is not logged on anywhere")
+                return self._error(HTTPStatus.NOT_FOUND, f"{to} is not on the board's list of names")
         elif path == "/api/messages/ack":
             b.ack(str(data.get("id") or ""))
         elif path == "/api/stations/remove":
@@ -407,11 +446,15 @@ def lan_addresses():
     return sorted(a for a in addrs if not a.startswith(("127.", "0.")))
 
 
-def is_tailscale(addr):
-    """Tailscale hands out addresses from 100.64.0.0/10 — reachable only from
-    the same tailnet, so never the one to give a lab station."""
-    a, b = (int(x) for x in addr.split(".")[:2])
-    return a == 100 and 64 <= b <= 127
+def tailscale_addresses():
+    """The addresses Tailscale itself gave this machine. Asked rather than
+    guessed from the 100.64.0.0/10 range: some campus networks hand out lab
+    addresses from that same range, and those are the ones stations need."""
+    try:
+        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=3)
+        return set(out.stdout.split()) if out.returncode == 0 else set()
+    except (OSError, subprocess.SubprocessError):
+        return set()
 
 
 def main():
@@ -439,8 +482,9 @@ def main():
     print("  password: " + ("on" if Handler.gate.on else
                             f"OFF — anyone who can reach this port can use the board ({args.password_file})"))
     addrs = lan_addresses() if args.bind in ("0.0.0.0", "") else [args.bind]
+    ts = tailscale_addresses()
     for a in addrs:
-        tag = "  (Tailscale only — not for lab stations)" if is_tailscale(a) else ""
+        tag = "  (Tailscale — only devices on your tailnet)" if a in ts else ""
         print(f"  board address: http://{a}:{args.port}{tag}")
     try:
         httpd.serve_forever()
