@@ -30,6 +30,10 @@ State
             at every station its person is logged on at (and on any device
             that has said it is theirs) until it is answered: "Got it", or a
             reply. Answered ones stay a week as the chat history.
+            A message can instead be left for a station (toStation rather
+            than to): it shows on that station's screen, for whoever is or
+            comes to be there, until someone answers it. A reply that answers
+            one carries a copy of it (re), so the conversation keeps its context.
 """
 
 import argparse
@@ -170,15 +174,21 @@ class Board:
                 here = {p for p, at in self.presence.items() if station in at} if station else set()
                 # a message shows wherever its person is logged on, and waits
                 # for them while they are logged on nowhere
-                out["messages"] = [m for m in self.messages
-                                   if not m.get("ackAt") and (m["to"] in here or m["to"] == me)]
+                out["messages"] = [m for m in self.messages if not m.get("ackAt") and (
+                    m.get("to") in here or (me and m.get("to") == me)
+                    or (station and m.get("toStation") == station))]
             return out
 
     def thread(self, a, b, limit=100):
         """The conversation between two people, oldest first."""
         with self.lock:
             pair = {a, b}
-            return [m for m in self.messages if {m["from"], m["to"]} == pair][-limit:]
+            return [m for m in self.messages if {m["from"], m.get("to")} == pair][-limit:]
+
+    def station_thread(self, station, limit=50):
+        """What has been left for a station, by anyone, oldest first."""
+        with self.lock:
+            return [m for m in self.messages if m.get("toStation") == station][-limit:]
 
     # ---------------------------------------------------------------- writes
     def add_person(self, name):
@@ -213,20 +223,34 @@ class Board:
                 del self.presence[person]
             self._save()
 
-    def send(self, sender, to, text):
-        """Anyone on the roster can be written to, logged on or not: a reply
-        must reach someone who has since left. Writing to someone also
-        answers whatever they had sent you, so those stop showing."""
+    def send(self, sender, text, to=None, to_station=None, answering=None):
+        """To a person or to a station. Anyone on the roster can be written
+        to, logged on or not: a reply must reach someone who has since left.
+        Writing to someone also answers whatever they had sent you, so those
+        stop showing; `answering` names one more message it answers, which is
+        how a reply to a note left at a station clears it. Returns the new
+        message, or None if there is no such person or station."""
         with self.lock:
-            if to not in self.people:
+            if to and to not in self.people:
+                return None
+            if to_station and to_station not in self.stations:
                 return None
             self._add_to_roster(sender)
             t = now_ms()
-            for m in self.messages:
-                if m["from"] == to and m["to"] == sender and not m.get("ackAt"):
-                    m["ackAt"] = t
-            m = {"id": uuid.uuid4().hex[:12], "from": sender, "to": to,
+            m = {"id": uuid.uuid4().hex[:12], "from": sender,
                  "text": text, "at": t, "ackAt": None}
+            if to:
+                m["to"] = to
+                for old in self.messages:
+                    if old["from"] == to and old.get("to") == sender and not old.get("ackAt"):
+                        old["ackAt"] = t
+            else:
+                m["toStation"] = to_station
+            for old in self.messages:
+                if answering and old["id"] == answering:
+                    old["ackAt"] = old.get("ackAt") or t
+                    if old.get("toStation"):
+                        m["re"] = {"station": old["toStation"], "text": old["text"]}
             self.messages.append(m)
             self._save()
             return m
@@ -372,8 +396,10 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(url.query)
             arg = lambda k: clean_name(q.get(k, [""])[0]) or None
             if url.path == "/api/thread":
+                if arg("station"):
+                    return self._json({"messages": self.board.station_thread(arg("station"))})
                 if not arg("a") or not arg("b"):
-                    return self._error(HTTPStatus.BAD_REQUEST, "a and b are required")
+                    return self._error(HTTPStatus.BAD_REQUEST, "a and b, or station, are required")
                 return self._json({"messages": self.board.thread(arg("a"), arg("b"))})
             return self._json(self.board.snapshot(arg("station"), arg("me")))
         self._error(HTTPStatus.NOT_FOUND, "not found")
@@ -413,13 +439,17 @@ class Handler(BaseHTTPRequestHandler):
             b.log_off(clean_name(data.get("person")), clean_name(data.get("station")) or None)
         elif path == "/api/messages":
             sender, to = clean_name(data.get("from")), clean_name(data.get("to"))
+            to_station = clean_name(data.get("toStation"))
             text = str(data.get("text") or "").strip()[:MAX_TEXT]
-            if not sender or not to or not text:
-                return self._error(HTTPStatus.BAD_REQUEST, "from, to and text are required")
+            if not sender or not (to or to_station) or not text:
+                return self._error(HTTPStatus.BAD_REQUEST, "from, to (or toStation) and text are required")
             if sender == to:
                 return self._error(HTTPStatus.BAD_REQUEST, "pick someone else to write to")
-            if not b.send(sender, to, text):
-                return self._error(HTTPStatus.NOT_FOUND, f"{to} is not on the board's list of names")
+            if not b.send(sender, text, to=to or None, to_station=None if to else to_station,
+                          answering=str(data.get("answering") or "") or None):
+                return self._error(HTTPStatus.NOT_FOUND,
+                                   f"{to} is not on the board's list of names" if to
+                                   else f"there is no station called {to_station}")
         elif path == "/api/messages/ack":
             b.ack(str(data.get("id") or ""))
         elif path == "/api/stations/remove":

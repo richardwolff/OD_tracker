@@ -91,12 +91,16 @@ opens the board, where people:
 - **log on** by tapping their name (adding it the first time). You can be
   logged on at several stations at once; **Log off** leaves only that station.
 - see every station, who is there, and since when
-- send a **request** to anyone logged on, using a one-tap message or their own
-  text. Nobody is asked who's writing: it's whoever is logged on at that
-  station (the most recent, if there are several), or whoever the device is
-  set to with **I'm …**. **Change** sends as someone else on the list.
-- **chat**: each conversation keeps its history, with one-tap replies ("On my
-  way", "Give me 5 minutes"…). Replying counts as Got it.
+- send a **request** to anyone logged on. Nobody is asked who's writing: it's
+  whoever is logged on at that station (the most recent, if there are
+  several), or whoever the device is set to with **I'm …**. **Change** sends
+  as someone else on the list.
+- **chat**: each conversation keeps its history. Replying counts as Got it.
+- leave a **message for a station**, with the **Message** button on its card,
+  even when nobody is logged on there. It shows on that station's screen until
+  someone there taps Got it or Reply. A reply goes to the sender, from whoever
+  is logged on at that station (it asks someone to log on first if nobody is),
+  and quotes the original note.
 
 The board also works in any browser at the server's address. Tap **I'm …** to
 say who that phone or laptop is for, and messages to you pop up there too. Add

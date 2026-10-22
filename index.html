@@ -792,7 +792,7 @@ dialog { max-height: calc(100dvh - 16px); }
 #msgStack {
   position: fixed; top: 10px; right: 10px; z-index: 40;
   display: flex; flex-direction: column; gap: 8px;
-  width: min(340px, calc(100vw - 20px));
+  width: min(380px, calc(100vw - 20px));
   pointer-events: none;
 }
 #msgStack:empty { display: none; }
@@ -805,6 +805,8 @@ dialog { max-height: calc(100dvh - 16px); }
 }
 .sb-msg-head { font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; }
 .sb-msg-head b { color: var(--text-primary); }
+.sb-msg-head span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-msg-head time { flex: none; white-space: nowrap; }
 .sb-msg-head time { margin-left: auto; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .sb-msg-text { font-size: 15px; line-height: 1.35; margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* the button sits beside the text, not under it: on the Pi's short panel every
@@ -4427,7 +4429,7 @@ function sbRender() {
   msgStack.innerHTML = msgs.map(m => `
     <div class="sb-msg" role="status">
       <div class="sb-msg-body">
-        <div><div class="sb-msg-head"><span><b>${esc(m.from)}</b> → ${esc(m.to)}</span><time>${hhmm(m.at)}</time></div>
+        <div><div class="sb-msg-head"><span><b>${esc(m.from)}</b> → ${esc(m.to || m.toStation)}</span><time>${hhmm(m.at)}</time></div>
           <div class="sb-msg-text">${esc(m.text)}</div></div>
         <div class="sb-msg-actions">
           <button type="button" data-ack="${esc(m.id)}">Got it</button>
@@ -4436,11 +4438,15 @@ function sbRender() {
       </div>
     </div>`).join("");
   msgStack.querySelectorAll("[data-ack]").forEach(b => { b.onclick = () => sbAck(b.dataset.ack, b); });
-  // Reply opens the board on the conversation, writing as the person it was for;
-  // the reply landing is what marks the message answered
+  // Reply opens the board on the conversation, writing as the person it was
+  // for — or, for a message left at this station, as whoever is logged on here.
+  // The reply landing is what marks the message answered.
   msgStack.querySelectorAll("[data-reply]").forEach(b => {
     const m = msgs.find(x => x.id === b.dataset.reply);
-    b.onclick = () => { if (sbDlg.open) sbDlg.close(); openBoard({ chat: m.from, as: m.to }); };
+    b.onclick = () => {
+      if (sbDlg.open) sbDlg.close();
+      openBoard(m.toStation ? { chat: m.from, re: m.id } : { chat: m.from, as: m.to });
+    };
   });
 }
 
@@ -4485,7 +4491,10 @@ function openBoard(chat = null) {
   // Reply to the same person still reload the frame, and so open it again
   const src = `${sb.server}/?station=${encodeURIComponent(sb.name)}&embed=1&touch=${touch}`
             + (theme ? `&theme=${theme}` : "")
-            + (chat ? `&chat=${encodeURIComponent(chat.chat)}&as=${encodeURIComponent(chat.as)}&n=${Date.now()}` : "")
+            + (chat ? `&chat=${encodeURIComponent(chat.chat)}`
+                    + (chat.as ? `&as=${encodeURIComponent(chat.as)}` : "")
+                    + (chat.re ? `&re=${encodeURIComponent(chat.re)}` : "")
+                    + `&n=${Date.now()}` : "")
             + (sb.key ? `#key=${encodeURIComponent(sb.key)}` : "");   // a fragment never reaches a server log
   boardFrame.hidden = down;
   document.getElementById("boardDown").hidden = !down;
