@@ -188,11 +188,14 @@ textarea { resize: vertical; min-height: 64px; }
    Pi's 480px panel the compose box never falls off the bottom. */
 #chatDlg[open] { display: flex; flex-direction: column; }
 #chatDlg:focus { outline: none; }
-#chatDlg .dlg-body { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+/* Content-sized, shrinking only when the screen is short: a zero basis (flex: 1)
+   collapses the whole body in WebKit — the Mac app and Safari — leaving just
+   the compose row showing. */
+#chatDlg .dlg-body { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; }
 .chat-from { font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .chat-from b { color: var(--text-primary); }
 .thread {
-  flex: 1 1 auto; min-height: 60px; max-height: 260px; overflow-y: auto;
+  flex: 0 1 auto; min-height: 60px; max-height: 260px; overflow-y: auto;
   display: flex; flex-direction: column; gap: 6px;
   padding: 8px; margin-bottom: 10px;
   background: var(--page); border: 1px solid var(--border); border-radius: 10px;
