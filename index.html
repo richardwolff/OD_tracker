@@ -419,6 +419,7 @@ svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
   background: var(--surface); border-color: var(--border); color: var(--text-secondary);
 }
 #cmpChart + .tooltip + .zoom-out { left: 7%; }
+.zeroline { stroke: var(--axis); stroke-width: 1.2; }
 html.touch .zoom-out { min-height: 34px; padding: 6px 12px; font-size: 13px; }
 .tooltip {
   position: absolute; pointer-events: none; z-index: 5;
@@ -580,6 +581,16 @@ html.touch .proj-del { opacity: 1; }
 .cmp-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
 .cmp-head > div { flex: 1 1 auto; }
 .cmp-title { font-size: 16px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
+/* the title is the switch between all cultures and replicate means */
+.cmp-mode { font: inherit; font-size: 16px; font-weight: 650; letter-spacing: -.01em; color: var(--text-primary);
+            background: transparent; border: 0; padding: 2px 6px; margin-left: -6px; border-radius: 7px; }
+.cmp-mode:hover { background: var(--surface-sunk); }
+.cmp-mode .caret { color: var(--text-secondary); font-size: 15px; }
+html.touch .cmp-mode { min-height: 0; padding: 4px 8px; }
+.sb-menu.cmp-mode-menu { width: 240px; }
+.sb-item[aria-checked="true"] { color: var(--series-1); font-weight: 650; }
+/* ±1 SD around a replicate mean */
+.errbar { stroke-width: 1.5; opacity: .65; }
 .cmp-sub { font-size: 13px; color: var(--text-secondary); margin: 2px 0 0; }
 
 /* Legend is mandatory here, not decoration: three light-mode series sit below
@@ -917,7 +928,8 @@ html.touch .sb-msg-actions button { min-height: 42px; }
     <div class="cmp-card">
       <div class="cmp-head">
         <div>
-          <h2 class="cmp-title">All cultures</h2>
+          <h2 class="cmp-title"><button type="button" class="cmp-mode" id="cmpModeBtn" aria-haspopup="menu"
+              title="One line per culture, or one per replicate group"><span id="cmpModeLabel">All cultures</span> <span class="caret">▾</span></button></h2>
           <p class="cmp-sub" id="cmpSub"></p>
         </div>
         <button id="cmpFitBtn" class="ghost toggle-btn" aria-pressed="false"
@@ -1209,6 +1221,12 @@ html.touch .sb-msg-actions button { min-height: 42px; }
     </div>
   </form>
 </dialog>
+
+<!-- the compare chart: every culture, or one line per replicate group -->
+<div class="sb-menu cmp-mode-menu" id="cmpModeMenu" role="menu" hidden>
+  <button type="button" class="sb-item" role="menuitemradio" data-mode="all">All cultures</button>
+  <button type="button" class="sb-item" role="menuitemradio" data-mode="means">Replicate means<small id="cmpMeansNote"></small></button>
+</div>
 
 <!-- Export project's two ways out: save the zip here, or send it -->
 <div class="sb-menu export-menu" id="exportMenu" role="menu" hidden>
@@ -1923,6 +1941,36 @@ document.getElementById("backBtn").onclick = closeProject;
    emphasis is something you turn on when the question is "which points is this
    growth rate actually resting on?". Not persisted, like the OD / pH switch. */
 let highlightFit = false;
+
+/* All cultures, or the mean of each replicate group. Not persisted, like the
+   axes: a session opens on every culture, the data as it was taken. */
+let cmpMode = "all";
+const projectGroups = () => groupsOf(P());   // drawOverlay's own P is the plotted value
+
+const cmpModeBtn  = document.getElementById("cmpModeBtn");
+const cmpModeMenu = document.getElementById("cmpModeMenu");
+function closeCmpModeMenu() { cmpModeMenu.hidden = true; cmpModeBtn.setAttribute("aria-expanded", "false"); }
+cmpModeBtn.onclick = () => {
+  if (!cmpModeMenu.hidden) return closeCmpModeMenu();
+  const none = !projectGroups().length;
+  const meansItem = cmpModeMenu.querySelector('[data-mode="means"]');
+  meansItem.disabled = none;
+  document.getElementById("cmpMeansNote").textContent = none ? "no replicate groups yet" : "";
+  cmpModeMenu.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-checked", String(b.dataset.mode === cmpMode)));
+  cmpModeMenu.hidden = false;
+  const r = cmpModeBtn.getBoundingClientRect(), w = cmpModeMenu.offsetWidth;
+  cmpModeMenu.style.top = `${Math.round(r.bottom + 6)}px`;
+  cmpModeMenu.style.left = `${Math.round(Math.min(Math.max(10, r.left), innerWidth - w - 10))}px`;
+  cmpModeBtn.setAttribute("aria-expanded", "true");
+};
+cmpModeMenu.querySelectorAll("[data-mode]").forEach(b => {
+  b.onclick = () => { closeCmpModeMenu(); if (cmpMode !== b.dataset.mode) { cmpMode = b.dataset.mode; drawOverlay(); } };
+});
+document.addEventListener("pointerdown", e => {
+  if (!cmpModeMenu.hidden && !cmpModeMenu.contains(e.target) && !cmpModeBtn.contains(e.target)) closeCmpModeMenu();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !cmpModeMenu.hidden) closeCmpModeMenu(); });
+addEventListener("resize", () => { if (!cmpModeMenu.hidden) closeCmpModeMenu(); });
 
 document.getElementById("cmpFitBtn").onclick = e => {
   highlightFit = !highlightFit;
@@ -2966,6 +3014,13 @@ const PLOTS = {
     tick: v => String(+v.toFixed(2)),
     tip:  v => `pH ${v.toFixed(2)}`
   },
+  // not a reading but worked out from them (rateSeriesOf), so it has no valueOf;
+  // only ever a y on the compare chart
+  mu: {
+    key: "mu", label: "Growth rate (h⁻¹)", log: false,
+    tick: v => String(+v.toFixed(2)),
+    tip:  v => `μ ${v.toFixed(2)} h⁻¹`
+  },
   t: {
     key: "t", label: "Elapsed time (h)", log: false,
     valueOf: m => m.t / 3.6e6,
@@ -3145,7 +3200,8 @@ const plotSwitchHTML = active => `<div class="viewsw plot-sw" role="tablist" ari
    flips to the other measurement. */
 function setCmpY(key) {
   if (cmpY === key) return;
-  if (cmpX === key) cmpX = cmpY;
+  // growth rate is never an x, so from it the x-axis goes back to time
+  if (cmpX === key) cmpX = cmpY === "mu" ? "t" : cmpY;
   cmpY = key;
   drawOverlay();
 }
@@ -3169,11 +3225,19 @@ function wirePlotSwitch(root, c) {
   });
 }
 
-/* The x-axis's own switch: the y one is the OD / pH toggle the cards carry. */
+/* The compare chart's y switch: what the cards switch between, plus the growth
+   rate at each reading, which only this chart offers. pH only once there is one. */
+const ySwitchHTML = active => `<div class="viewsw plot-sw" role="tablist" aria-label="Value up the y-axis">
+    <button type="button" role="tab" data-plot="od" aria-selected="${active === "od"}">OD₆₀₀</button>
+    ${anyPh() ? `<button type="button" role="tab" data-plot="ph" aria-selected="${active === "ph"}">pH</button>` : ""}
+    <button type="button" role="tab" data-plot="mu" aria-selected="${active === "mu"}">Growth rate</button>
+  </div>`;
+
+/* The x-axis's own switch. */
 const xSwitchHTML = active => `<div class="viewsw plot-sw" role="tablist" aria-label="Value along the x-axis">
     <button type="button" role="tab" data-x="t"  aria-selected="${active === "t"}">Time</button>
     <button type="button" role="tab" data-x="od" aria-selected="${active === "od"}">OD₆₀₀</button>
-    <button type="button" role="tab" data-x="ph" aria-selected="${active === "ph"}">pH</button>
+    ${anyPh() ? `<button type="button" role="tab" data-x="ph" aria-selected="${active === "ph"}">pH</button>` : ""}
   </div>`;
 
 /* The toggle bar an axis title raises. One popover serves both axes: it is
@@ -3187,7 +3251,7 @@ function openAxisPop(el) {
   const axis = el.dataset.axis;
   if (!axisPop.hidden && axisPop.dataset.axis === axis) return closeAxisPop();
 
-  axisPop.innerHTML = axis === "y" ? plotSwitchHTML(cmpY) : xSwitchHTML(cmpX);
+  axisPop.innerHTML = axis === "y" ? ySwitchHTML(cmpY) : xSwitchHTML(cmpX);
   axisPop.dataset.axis = axis;
   axisPop.querySelectorAll("[data-plot]").forEach(b => { b.onclick = () => setCmpY(b.dataset.plot); });
   axisPop.querySelectorAll("[data-x]").forEach(b => { b.onclick = () => setCmpX(b.dataset.x); });
@@ -3371,12 +3435,21 @@ function drawOverlay() {
   const hint   = document.getElementById("cmpHint");
 
   // a culture can be drawn as soon as it has 2+ points carrying both values
-  const P  = cmpY === "ph" && anyPh() ? PLOTS.ph : PLOTS.od;
-  const PX = cmpX !== "t" && anyPh() ? PLOTS[cmpX] : PLOTS.t;
+  const P  = cmpY === "mu" ? PLOTS.mu : cmpY === "ph" && anyPh() ? PLOTS.ph : PLOTS.od;
+  const rate = P.key === "mu";
+  // x can leave time once there is something else to put there: OD against pH
+  // (or pH against OD) needs a pH, a growth rate against OD needs nothing more
+  const xOk = cmpX === "od" ? anyPh() || rate : cmpX === "ph" && anyPh();
+  const PX = xOk ? PLOTS[cmpX] : PLOTS.t;
   const timeX = PX.key === "t";
-  const all = cultures().map(c => ({ c, fit: fitGrowth(c), pts: seriesOf(c, P, PX) }));
-  const drawable = all.filter(s => s.pts.length >= 2);
+  const all = cultures().map(c => ({ c, fit: fitGrowth(c), pts: rate ? rateSeriesOf(c, PX) : seriesOf(c, P, PX) }));
+  // a growth rate is a point of its own, three readings in; a curve needs two
+  const drawable = all.filter(s => s.pts.length >= (rate ? 1 : 2));
   const shown    = drawable.filter(s => !s.c.hidden);
+  // what is drawn: those cultures, or their replicate means
+  const means    = cmpMode === "means" && projectGroups().length > 0;
+  const plotted  = means ? replicateMeans(shown, P, PX) : shown;
+  document.getElementById("cmpModeLabel").textContent = means ? "Replicate means" : "All cultures";
 
   legend.innerHTML = legendHTML(all);
   legend.querySelectorAll("[data-lg]").forEach(el => {
@@ -3394,14 +3467,18 @@ function drawOverlay() {
   svg.setAttribute("aria-label", `${P.label} against ${timeX ? "elapsed hours" : PX.label} for all cultures`);
 
   const thin = all.length - drawable.length;
-  sub.textContent = shown.length
-    ? `${shown.length} of ${all.length} plotted${timeX ? "" : ` · ${P.label} against ${PX.label}`}`
-    : "";
+  const groupLines = plotted.filter(s => s.mean).length;
+  sub.textContent = !shown.length ? ""
+    : (means ? `${groupLines} group mean${groupLines === 1 ? "" : "s"}${plotted.length > groupLines ? ` + ${plotted.length - groupLines} ungrouped` : ""}`
+             : `${shown.length} of ${all.length} plotted`)
+      + (timeX ? "" : ` · ${P.label} against ${PX.label}`);
   const needs = [P, PX].some(a => a.key === "ph") ? "pH " : "";
   hint.textContent = [
     "Tap a culture in the legend to hide or show it.",
     "Drag across the chart to zoom in; double-tap it or use Show all to zoom back out.",
-    thin ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs 2+ ${needs}readings).` : ""
+    thin ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs ${rate ? 3 : 2}+ ${needs}readings).` : "",
+    rate ? "Growth rate at each reading is the slope of ln OD between the readings either side of it, so the first and last readings have none." : "",
+    means ? `Replicates are averaged reading by reading (all the first readings together, then the second…), with bars at ±1 SD${P.log ? "; on OD's log axis the mean is geometric" : ""}. Hide a culture in the legend to leave it out.` : ""
   ].filter(Boolean).join(" ");
 
   if (!shown.length) {
@@ -3419,10 +3496,11 @@ function drawOverlay() {
   svg.style.aspectRatio = `${W} / ${H}`;
   svg.classList.toggle("hl-fit", highlightFit);
 
-  // the titles only become controls once there is a pH to switch to
-  const pick = anyPh();
+  // the x title becomes a control once there is something to switch to — a pH,
+  // or a growth rate to set against OD; the y one always is
+  const pick = anyPh() || rate;
 
-  const xs = shown.flatMap(s => s.pts.map(p => p.x));
+  const xs = plotted.flatMap(s => s.pts.map(p => p.x));
   // time runs from inoculation, so that axis is anchored at zero; a measured
   // value is scaled to the data, the same way the y-axis is
   const { Y: X, ticks: xTicks, lo: xLo, hi: xHi, inv: xInv } = timeX
@@ -3431,8 +3509,12 @@ function drawOverlay() {
 
   // zoomed in, the y-axis fits the readings in view; the rest is clipped away
   const inView = s => cmpZoom ? s.pts.filter(p => p.x >= xLo && p.x <= xHi) : s.pts;
-  const ys = shown.flatMap(s => inView(s).map(p => p.y));
-  const { Y, ticks: yTicks } = yAxis(ys.length ? ys : shown.flatMap(s => s.pts.map(p => p.y)), P, pad.t, H - pad.b);
+  // a mean's bars must fit too, not just the mean
+  const yOf = p => (p.lo !== undefined ? [p.y, p.lo, p.hi] : [p.y]);
+  const ys = plotted.flatMap(s => inView(s).flatMap(yOf));
+  const yVals = ys.length ? ys : plotted.flatMap(s => s.pts.flatMap(yOf));
+  // a growth rate always takes in zero: whether it is growing at all is the first read
+  const { Y, ticks: yTicks } = yAxis(rate ? yVals.concat(0) : yVals, P, pad.t, H - pad.b);
 
   let g = plotBoxHTML("cmp", W, H, pad);
   for (const v of yTicks) {
@@ -3448,15 +3530,16 @@ function drawOverlay() {
   }
   g += `<line class="axisline" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${H - pad.b}"/>
         <line class="axisline" x1="${pad.l}" y1="${H - pad.b}" x2="${W - pad.r}" y2="${H - pad.b}"/>
+        ${rate ? `<line class="zeroline" x1="${pad.l}" y1="${Y(0).toFixed(1)}" x2="${W - pad.r}" y2="${Y(0).toFixed(1)}"/>` : ""}
         ${axisTitleHTML("x", PX.label, `translate(${(pad.l + W - pad.r) / 2}, ${H - 5})`, pick)}
-        ${axisTitleHTML("y", P.label,  `rotate(-90) translate(${-(pad.t + H - pad.b) / 2}, 13)`, pick)}`;
+        ${axisTitleHTML("y", P.label,  `rotate(-90) translate(${-(pad.t + H - pad.b) / 2}, 13)`, true)}`;
 
   /* The line is drawn as two paths rather than one: a segment counts as fitted
      only when BOTH of its endpoints are in the fit, so the heavy stroke never
      runs into or out of an excluded reading and claim more than the fit does.
      Faded first, solid over it, so the thick stroke owns the crossings. */
   g += `<g clip-path="url(#clip-cmp)">`;
-  for (const s of shown) {
+  for (const s of plotted) {
     const col  = colorVar(s.c);
     const dash = dashOf(s.c);
     const at   = p => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`;
@@ -3473,6 +3556,14 @@ function drawOverlay() {
         g += `<path class="dataline ${kind}-fit" style="${stroke}" d="${seg[kind].join(" ")}"/>`;
     }
 
+    // ±1 SD, under the points, where there were replicates to spread
+    for (const p of s.pts) {
+      if (!(p.hi > p.lo)) continue;
+      const x = X(p.x).toFixed(1), y0 = Y(p.lo).toFixed(1), y1 = Y(p.hi).toFixed(1);
+      const cap = y => `M${(X(p.x) - 4).toFixed(1)},${y}H${(X(p.x) + 4).toFixed(1)}`;
+      g += `<path class="errbar" style="stroke:${col}" d="M${x},${y0}V${y1}${cap(y0)}${cap(y1)}"/>`;
+    }
+
     for (const p of s.pts)
       g += `<circle class="pt ${p.use ? "" : "off-fit"}" style="fill:${col}"
               cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="4"/>`;
@@ -3481,12 +3572,12 @@ function drawOverlay() {
 
   // Direct labels only while they stay legible; past four, converging lines make
   // end-labels collide and the legend carries identity instead.
-  if (shown.length <= 4) {
+  if (plotted.length <= 4) {
     // Place end labels, then keep only those that don't collide. Nudging
     // overlapping labels apart would detach them from their lines; the legend
     // already carries identity, so a dropped label loses nothing.
     const boxes = [];
-    for (const s of shown) {
+    for (const s of plotted) {
       const seen = inView(s);
       if (!seen.length) continue;              // nothing of it in the zoomed range
       const last = seen[seen.length - 1];
@@ -3536,7 +3627,7 @@ function drawOverlay() {
     onHover(xv, yv) {
       const box = svg.getBoundingClientRect();
       let best = null, bestD = Infinity;
-      for (const s of shown) {
+      for (const s of plotted) {
         for (const p of inView(s)) {
           const d = Math.hypot(X(p.x) - xv, Y(p.y) - yv);
           if (d < bestD) { bestD = d; best = { s, p }; }
@@ -3547,8 +3638,8 @@ function drawOverlay() {
       cross.setAttribute("opacity", "1");
       tip.innerHTML =
         `<span class="lg-dot" style="display:inline-block;background:${colorVar(best.s.c)};margin-right:6px"></span>
-         <span class="tt-od">${esc(best.s.c.name)}</span>
-         <span class="tt-t"> · ${P.tip(best.p.y)} · ${PX.tip(best.p.x)}</span>
+         <span class="tt-od">${esc(best.s.c.name)}${best.s.mean ? ` · mean of ${best.p.n}` : ""}</span>
+         <span class="tt-t"> · ${P.tip(best.p.y)}${best.p.hi > best.p.lo ? ` (±1 SD ${P.tick(best.p.lo)}–${P.tick(best.p.hi)})` : ""} · ${PX.tip(best.p.x)}${rate && best.s.fit && best.s.fit.ok ? ` · fitted μ ${best.s.fit.mu.toFixed(2)}` : ""}</span>
          ${best.p.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
       tip.style.left = `${(X(best.p.x) / W) * box.width}px`;
       tip.style.top  = `${(Y(best.p.y) / H) * box.height - 10}px`;
@@ -3559,6 +3650,60 @@ function drawOverlay() {
       tip.style.opacity = "0";
     }
   });
+
+}
+
+/* Growth rate at each reading: the two-sided (central) difference of ln OD,
+   (ln OD[i+1] − ln OD[i−1]) / (t[i+1] − t[i−1]), in h⁻¹ — the same ln OD the
+   fitted μ is the slope of, taken locally instead of over the fitted stretch.
+   The first and last readings have a neighbour on one side only, so they get
+   no point. A rate counts as fitted only when all three readings it rests on
+   are, which is what Highlight fitted fades by. Placed at the middle reading's
+   x, whatever the x-axis is — time, or OD or pH for μ against those. */
+/* One series per replicate group: its replicates averaged reading by reading —
+   every first reading together, then every second, and so on — which is right
+   when replicates are read at the same time points, as they usually are. A
+   value on a log axis (OD) is averaged as its log, so the mean is geometric and
+   the ±1 SD bars sit evenly about it there; anything else is a plain mean. A
+   culture hidden in the legend is left out of its group's mean, and cultures in
+   no group are passed through as themselves. */
+function meanSD(vs, log) {
+  const t = log ? vs.map(Math.log) : vs;
+  const m = t.reduce((a, b) => a + b, 0) / t.length;
+  const sd = t.length > 1 ? Math.sqrt(t.reduce((a, b) => a + (b - m) ** 2, 0) / (t.length - 1)) : 0;
+  const back = v => (log ? Math.exp(v) : v);
+  return { m: back(m), lo: back(m - sd), hi: back(m + sd) };
+}
+
+function replicateMeans(shown, PY, PX) {
+  const groups = projectGroups();
+  const out = [];
+  for (const g of groups) {
+    const reps = shown.filter(s => s.c.groupId === g.id);
+    if (!reps.length) continue;
+    const pts = [];
+    for (let i = 0, len = Math.max(...reps.map(s => s.pts.length)); i < len; i++) {
+      const at = reps.map(s => s.pts[i]).filter(Boolean);
+      const x = meanSD(at.map(p => p.x), PX.log), y = meanSD(at.map(p => p.y), PY.log);
+      pts.push({ x: x.m, y: y.m, lo: y.lo, hi: y.hi, n: at.length, use: at.every(p => p.use) });
+    }
+    // drawn in its first replicate's colour, under the group's name
+    out.push({ c: { ...reps[0].c, name: g.name }, mean: reps.length, fit: null, pts });
+  }
+  return out.concat(shown.filter(s => !groups.some(g => g.id === s.c.groupId)));
+}
+
+function rateSeriesOf(c, PX) {
+  const ms = c.measurements.filter(m => m.od > 0).slice().sort((a, b) => a.t - b.t);
+  const out = [];
+  for (let i = 1; i < ms.length - 1; i++) {
+    const a = ms[i - 1], m = ms[i], b = ms[i + 1];
+    const dt = (b.t - a.t) / 3.6e6;
+    const x = PX.valueOf(m);
+    if (!(dt > 0) || x === null) continue;
+    out.push({ x, y: (Math.log(b.od) - Math.log(a.od)) / dt, use: [a, m, b].every(r => r.use !== false) });
+  }
+  return out;
 }
 
 const trim = (s, n) => s.length > n ? s.slice(0, n - 1) + "…" : s;
