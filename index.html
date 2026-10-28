@@ -773,6 +773,22 @@ dialog { max-height: calc(100dvh - 16px); }
 .sb-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
 .sb-dot.on { background: var(--good); }
 .sb-dot.idle { background: var(--serious); }   /* reachable, but nobody logged on here */
+
+/* who a project goes to: people first, then stations' screens */
+.sb-menu.export-menu { width: 230px; }
+.sb-item:disabled { opacity: .45; cursor: not-allowed; background: transparent; }
+.send-to { display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+           max-height: 210px; overflow-y: auto; }
+.send-to button { text-align: left; white-space: normal; padding: 8px 10px; }
+.send-to button small { display: block; font-weight: 400; font-size: 11.5px; color: var(--text-muted); }
+.send-to button.picked { background: var(--series-1); border-color: transparent; color: #fff; }
+.send-to button.picked small { color: rgba(255,255,255,.8); }
+.send-to .sec { grid-column: 1 / -1; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+html.touch .send-to button { min-height: 50px; }
+/* a zip carried by a request */
+/* one line: the name gives way ("Demo_glucose_vs…"), the size never does */
+.sb-file { display: flex; gap: 4px; font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; white-space: nowrap; }
+.sb-file .fname { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .sb-dot.off { background: var(--critical); }
 
 /* The log-on menu, dropped from the header button: who's here, everyone else
@@ -872,8 +888,8 @@ html.touch .sb-msg-actions button { min-height: 42px; }
   <div class="spacer"></div>
   <button id="startAll" class="ghost" hidden>Start all</button>
   <button id="pauseAll" class="ghost" hidden>Pause all</button>
-  <button id="exportAll" class="ghost" hidden
-          title="Download the readings and the metadata report together, as a zip">Export project</button>
+  <button id="exportAll" class="ghost" hidden aria-haspopup="menu"
+          title="The readings and the metadata report together, as a zip: download it, or send it">Export project ▾</button>
   <button id="colsBtn" class="icon ghost" title="Cards per row" aria-label="Cards per row" hidden>▦</button>
   <button id="stationBtn" class="ghost station-btn" title="Log on at this station" aria-haspopup="menu"><span class="sb-dot" id="sbDot"></span><span class="sb-who" id="sbWho">Station</span></button>
   <button id="boardBtn" class="ghost" hidden title="Every station and who's at it; message a person or a station">Stations</button>
@@ -1171,6 +1187,33 @@ html.touch .sb-msg-actions button { min-height: 42px; }
     <p><strong>Can't reach the Station Board server.</strong></p>
     <p id="boardDownWhy"></p>
   </div>
+</div>
+
+<!-- send the open project's zip over the Station Board -->
+<dialog id="sendDlg">
+  <form method="dialog" class="dlg-body" id="sendForm">
+    <p class="dlg-title">Send project</p>
+    <p class="dlg-sub" id="sendSub"></p>
+    <div class="field">
+      <label>To</label>
+      <div class="send-to" id="sendTo"></div>
+    </div>
+    <div class="field">
+      <label for="sendNote">Note <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
+      <input type="text" id="sendNote" maxlength="300" autocomplete="off" placeholder="Here's the run from this morning">
+    </div>
+    <div class="err" id="sendErr"></div>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="sendCancel">Cancel</button>
+      <button type="submit" class="primary" id="sendGo">Send</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Export project's two ways out: save the zip here, or send it -->
+<div class="sb-menu export-menu" id="exportMenu" role="menu" hidden>
+  <button type="button" class="sb-item" role="menuitem" id="exportDownload">Download</button>
+  <button type="button" class="sb-item" role="menuitem" id="exportSend">Send…<small id="exportSendNote"></small></button>
 </div>
 
 <!-- the log-on menu, dropped from the header button -->
@@ -4224,10 +4267,40 @@ document.getElementById("addBtn").onclick = () => {
   if (input) { input.focus(); input.select(); }
 };
 
-document.getElementById("exportAll").onclick = () => {
+/* Export project drops a two-item menu: Download saves the zip here, as it
+   always has; Send… puts it in a message over the Station Board (see
+   openSendDlg), so it is only offered once this station is on a board. */
+const exportBtn  = document.getElementById("exportAll");
+const exportMenu = document.getElementById("exportMenu");
+
+function closeExportMenu() {
+  exportMenu.hidden = true;
+  exportBtn.setAttribute("aria-expanded", "false");
+}
+exportBtn.onclick = () => {
   if (!P()) return;
-  downloadZip(projectZip(P()), exportNameAs("zip", P().name));
+  if (!exportMenu.hidden) return closeExportMenu();
+  const board = sbOn() && !sbLocked;
+  document.getElementById("exportSend").disabled = !board;
+  document.getElementById("exportSendNote").textContent = board ? "" : "needs the Station Board";
+  exportMenu.hidden = false;
+  // under the button, left edges aligned, kept on screen
+  const r = exportBtn.getBoundingClientRect(), w = exportMenu.offsetWidth;
+  exportMenu.style.top = `${Math.round(r.bottom + 6)}px`;
+  exportMenu.style.left = `${Math.round(Math.min(Math.max(10, r.left), innerWidth - w - 10))}px`;
+  exportBtn.setAttribute("aria-expanded", "true");
 };
+// the save picker needs the tap itself, so the download starts straight from it
+document.getElementById("exportDownload").onclick = () => {
+  closeExportMenu();
+  if (P()) downloadZip(projectZip(P()), exportNameAs("zip", P().name));
+};
+document.getElementById("exportSend").onclick = () => { closeExportMenu(); openSendDlg(); };
+document.addEventListener("pointerdown", e => {
+  if (!exportMenu.hidden && !exportMenu.contains(e.target) && !exportBtn.contains(e.target)) closeExportMenu();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !exportMenu.hidden) closeExportMenu(); });
+addEventListener("resize", () => { if (!exportMenu.hidden) closeExportMenu(); });
 
 /* ---------- full screen ---------- */
 /* One button for the whole page. Useful on a desktop, and on the Pi it hides
@@ -4480,14 +4553,20 @@ function sbRender() {
     <div class="sb-msg" role="status">
       <div class="sb-msg-body">
         <div><div class="sb-msg-head"><span><b>${esc(m.from)}</b> → ${esc(m.to || m.toStation)}</span><time>${hhmm(m.at)}</time></div>
-          <div class="sb-msg-text">${esc(m.text)}</div></div>
+          ${m.text ? `<div class="sb-msg-text">${esc(m.text)}</div>` : ""}
+          ${m.file ? `<div class="sb-file" title="${esc(m.file.name)}">📎 <span class="fname">${esc(m.file.name)}</span> · ${fileSize(m.file.size)}</div>` : ""}</div>
         <div class="sb-msg-actions">
+          ${m.file ? `<button type="button" class="primary" data-import="${esc(m.id)}">Import</button>` : ""}
           <button type="button" data-ack="${esc(m.id)}">Got it</button>
           <button type="button" data-reply="${esc(m.id)}">Reply</button>
         </div>
       </div>
     </div>`).join("");
   msgStack.querySelectorAll("[data-ack]").forEach(b => { b.onclick = () => sbAck(b.dataset.ack, b); });
+  msgStack.querySelectorAll("[data-import]").forEach(b => {
+    const m = msgs.find(x => x.id === b.dataset.import);
+    b.onclick = () => sbImport(m.file, m.id, b);
+  });
   // Reply opens the board on the conversation, writing as the person it was
   // for — or, for a message left at this station, as whoever is logged on here.
   // The reply landing is what marks the message answered.
@@ -4557,6 +4636,100 @@ function openBoard(chat = null) {
 function closeBoard() {
   boardEl.hidden = true;
   sbPoll();      // a log-on made on the board shows in the header straight away
+}
+
+/* ---------- sending a project, and importing one ----------
+   Export project → Send… uploads the open project's zip (the same one Download saves) to
+   the board, then sends it in a message to a person or to a station's screen.
+   A message carrying a zip gets an Import button, which fetches it and loads
+   it as Import project would; importing counts as Got it. */
+const fileSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} kB` : `${(n / 1048576).toFixed(1)} MB`;
+const sendDlg = document.getElementById("sendDlg");
+let sendTarget = null;     // { to } a person or { toStation }
+
+// whoever logged on here most recently is the sender, as on the board
+function sbSender() {
+  const mine = sbState && sbState.stations.find(s => s.name === sb.name);
+  return mine && mine.people.length ? mine.people[mine.people.length - 1].name : null;
+}
+
+function openSendDlg() {
+  if (!P()) return;
+  if (!sbOn() || sbLocked) return openSbSettings();
+  const from = sbSender();
+  sendTarget = null;
+  document.getElementById("sendNote").value = "";
+  document.getElementById("sendErr").textContent = "";
+  document.getElementById("sendSub").textContent = !sbState
+    ? "Can't reach the board server right now."
+    : from ? `“${P().name}” goes as a zip, from ${from}. They can import it with one tap.`
+    : "Log on at this station first (the button at the top), so they know who it's from.";
+  const box = document.getElementById("sendTo");
+  if (!sbState || !from) { box.innerHTML = ""; document.getElementById("sendGo").disabled = true; sendDlg.showModal(); return; }
+  document.getElementById("sendGo").disabled = false;
+  const people = sbState.people.filter(p => p.name !== from);
+  const stations = sbState.stations.filter(s => s.name !== sb.name);
+  box.innerHTML =
+      (people.length ? `<div class="sec">People</div>` : "")
+    + people.map(p => `<button type="button" data-to="${esc(p.name)}">${esc(p.name)}<small>${p.stations.length ? `at ${esc(p.stations.join(", "))}` : "not logged on"}</small></button>`).join("")
+    + (stations.length ? `<div class="sec">A station's screen</div>` : "")
+    + stations.map(s => `<button type="button" data-station="${esc(s.name)}">${esc(s.name)}<small>${s.people.length ? esc(s.people.map(p => p.name).join(", ")) : "nobody there"}</small></button>`).join("")
+    + (people.length || stations.length ? "" : `<div class="sec">There's nobody else on the board yet.</div>`);
+  box.querySelectorAll("button").forEach(b => {
+    b.onclick = () => {
+      box.querySelectorAll(".picked").forEach(x => x.classList.remove("picked"));
+      b.classList.add("picked");
+      sendTarget = b.dataset.to ? { to: b.dataset.to } : { toStation: b.dataset.station };
+    };
+  });
+  sendDlg.showModal();
+}
+
+async function sbFetch(path, opts = {}) {
+  const r = await fetch(`${sb.server}${path}`, { ...opts, headers: sbHeaders(opts.headers || {}) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `The board said ${r.status}.`);
+  return r;
+}
+
+document.getElementById("sendForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const err = document.getElementById("sendErr"), go = document.getElementById("sendGo");
+  const from = sbSender();
+  if (!sendTarget) { err.textContent = "Pick who to send it to."; return; }
+  go.disabled = true; err.textContent = "Sending…";
+  try {
+    const name = exportNameAs("zip", P().name);
+    const up = await (await sbFetch(`/api/files?name=${encodeURIComponent(name)}`, {
+      method: "POST", headers: { "Content-Type": "application/zip" }, body: projectZip(P())
+    })).json();
+    await sbFetch("/api/messages", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, ...sendTarget, text: document.getElementById("sendNote").value.trim(), file: { id: up.id } })
+    });
+    sendDlg.close();
+    sbPoll();
+  } catch (x) {
+    err.textContent = x instanceof TypeError ? "Can't reach the board server." : x.message;
+  } finally {
+    go.disabled = false;
+  }
+});
+document.getElementById("sendCancel").onclick = () => sendDlg.close();
+
+async function sbImport(file, msgId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Importing…"; }
+  try {
+    const blob = await (await sbFetch(`/api/files/${encodeURIComponent(file.id)}`)).blob();
+    await importProjectZip(blob);
+    boardEl.hidden = true;                       // the project it opened is what to look at now
+    if (msgId) await sbFetch("/api/messages/ack", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: msgId })
+    }).catch(() => {});
+    sbPoll();
+  } catch (x) {
+    if (btn) { btn.disabled = false; btn.textContent = "Import"; }
+    notice("Could not import that project", x instanceof TypeError ? "Can't reach the board server." : x.message);
+  }
 }
 
 /* ---------- the log-on menu ----------
@@ -4645,6 +4818,13 @@ function closeSbMenu() {
   sbMenu.hidden = true;
   sbBtn.setAttribute("aria-expanded", "false");
 }
+
+// Import, tapped on a zip inside the board (which can't reach the projects itself)
+addEventListener("message", e => {
+  const d = e.data;
+  if (e.source !== boardFrame.contentWindow || !d || d.type !== "station-board:import") return;
+  if (d.file && typeof d.file.id === "string") sbImport(d.file, typeof d.msgId === "string" ? d.msgId : null, null);
+});
 
 sbBtn.onclick = () => {
   if (!sbOn() || sbLocked) return openSbSettings();

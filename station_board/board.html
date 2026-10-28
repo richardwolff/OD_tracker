@@ -212,6 +212,15 @@ textarea { resize: vertical; min-height: 64px; }
 .compose { display: flex; gap: 8px; align-items: flex-end; margin-top: 8px; }
 .compose textarea { min-height: 44px; height: 44px; }
 .compose button { flex: none; }
+.compose .attach { padding: 6px 9px; font-size: 16px; }
+.attached { font-size: 12.5px; color: var(--text-secondary); margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+.attached button { font-size: 12px; padding: 2px 8px; }
+/* a zip in a message: its name, and what can be done with it */
+.file { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; font-size: 12.5px; }
+.file .fname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; min-width: 0; }
+.file button { font-size: 12px; padding: 3px 9px; }
+.bubble.mine .file button { color: var(--text-primary); }
+html.touch .file button { min-height: 34px; padding: 4px 10px; }
 
 /* ---------- incoming requests, upper right ---------- */
 /* just under the header, so a message never covers "I'm …" or Sign out */
@@ -330,9 +339,12 @@ html.touch .msg-actions button { min-height: 40px; }
     <div class="names" id="fromNames" style="margin-bottom:10px"></div>
     <div class="thread" id="thread"></div>
     <div class="compose">
+      <button type="button" class="attach" id="attachBtn" title="Attach a project zip">📎</button>
       <textarea id="msgText" maxlength="500" placeholder="Write a message…"></textarea>
       <button class="primary" id="msgSend">Send</button>
     </div>
+    <input type="file" id="attachFile" accept=".zip,application/zip,application/x-zip-compressed" hidden>
+    <div class="attached" id="attached" hidden></div>
     <div class="err" id="msgErr"></div>
     <div class="dlg-actions" style="margin-top:10px">
       <button id="chatClose">Close</button>
@@ -577,7 +589,8 @@ function renderMessages() {
     <div class="msg" role="status">
       <div class="msg-body">
         <div><div class="msg-head"><span><b>${esc(m.from)}</b> → ${esc(m.to || m.toStation)}</span><time>${clock(m.at)}</time></div>
-          <div class="msg-text">${esc(m.text)}</div></div>
+          ${m.text ? `<div class="msg-text">${esc(m.text)}</div>` : ""}
+          ${m.file ? fileHTML(m.file, m.id) : ""}</div>
         <div class="msg-actions">
           <button data-ack="${esc(m.id)}">Got it</button>
           <button data-reply="${esc(m.id)}">Reply</button>
@@ -761,13 +774,13 @@ function renderThread() {
   if (chat.station) {
     // many people leave messages at a station, so each one is signed
     html = thread.length
-      ? thread.map(m => `<div class="bubble ${m.from === chatFrom ? "mine" : ""}"><b class="who">${esc(m.from)}</b>${esc(m.text)}<time>${clock(m.at)}${m.ackAt ? " · answered" : ""}</time></div>`).join("")
+      ? thread.map(m => `<div class="bubble ${m.from === chatFrom ? "mine" : ""}"><b class="who">${esc(m.from)}</b>${esc(m.text)}${m.file ? fileHTML(m.file, m.id) : ""}<time>${clock(m.at)}${m.ackAt ? " · answered" : ""}</time></div>`).join("")
       : `<p class="none">Nothing has been left at ${esc(chat.station)} lately.</p>`;
   } else {
     // the station message being answered, until the reply carrying it is sent
     const pending = chat.re && !thread.some(m => m.re && m.re.text === chat.re.text)
       ? `<div class="bubble"><b class="who">${esc(chat.re.from)} · left at ${esc(chat.re.toStation)}</b>${esc(chat.re.text)}<time>${clock(chat.re.at)}</time></div>` : "";
-    html = thread.map(m => `<div class="bubble ${m.from === chatFrom ? "mine" : ""}">${m.re ? quoteHTML(m.re) : ""}${esc(m.text)}<time>${clock(m.at)}</time></div>`).join("")
+    html = thread.map(m => `<div class="bubble ${m.from === chatFrom ? "mine" : ""}">${m.re ? quoteHTML(m.re) : ""}${esc(m.text)}${m.file ? fileHTML(m.file, m.id) : ""}<time>${clock(m.at)}</time></div>`).join("")
       + pending;
     if (!html) html = `<p class="none">${chatFrom ? `No messages between ${esc(chatFrom)} and ${esc(chat.to)} yet.` : ""}</p>`;
   }
@@ -780,14 +793,91 @@ $("chatClose").onclick = () => $("chatDlg").close();
 $("chatDlg").addEventListener("close", () => { chat = chatFrom = null; thread = []; });
 $("msgSend").onclick = async () => {
   const text = $("msgText").value.trim();
-  if (!text) { $("msgErr").textContent = "Write a message first."; return; }
-  const body = chat.station ? { from: chatFrom, toStation: chat.station, text }
-                            : { from: chatFrom, to: chat.to, text, answering: chat.re ? chat.re.id : undefined };
+  if (!text && !attachment) { $("msgErr").textContent = "Write a message first."; return; }
   $("msgSend").disabled = true;
-  const ok = await act("/api/messages", body, $("msgErr"));
+  try {
+    // the zip goes up first; the message then points at it
+    let file;
+    if (attachment) {
+      $("msgErr").textContent = `Sending ${attachment.name}…`;
+      const r = await fetch(`/api/files?name=${encodeURIComponent(attachment.name)}`, {
+        method: "POST", body: attachment,
+        headers: { ...(KEY ? { "X-Board-Key": KEY } : {}), "Content-Type": "application/zip" }
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `server said ${r.status}`);
+      file = { id: data.id };
+    }
+    const body = chat.station ? { from: chatFrom, toStation: chat.station, text, file }
+                              : { from: chatFrom, to: chat.to, text, file, answering: chat.re ? chat.re.id : undefined };
+    if (await act("/api/messages", body, $("msgErr"))) {
+      $("msgText").value = "";
+      setAttachment(null);
+      await loadThread();
+    }
+  } catch (err) {
+    $("msgErr").textContent = err.message;
+  }
   $("msgSend").disabled = false;
-  if (ok) { $("msgText").value = ""; await loadThread(); }
 };
+
+/* ---------- attachments ----------
+   A project zip, picked from disk with 📎 and sent with the message. One
+   carried by a message can be downloaded; inside OD Tracker it can also be
+   imported straight in, which OD Tracker does (it holds the projects). */
+let attachment = null;
+function setAttachment(file) {
+  attachment = file;
+  $("attachFile").value = "";
+  $("attached").hidden = !file;
+  $("attached").innerHTML = file
+    ? `📎 ${esc(file.name)} · ${fileSize(file.size)} <button type="button" class="ghost" id="unattach">Remove</button>` : "";
+  if (file) $("unattach").onclick = () => setAttachment(null);
+}
+$("attachBtn").onclick = () => $("attachFile").click();
+$("attachFile").onchange = () => {
+  const f = $("attachFile").files[0];
+  if (!f) return;
+  if (!/\.zip$/i.test(f.name)) { $("msgErr").textContent = "Only project zips can be sent."; return; }
+  if (f.size > 25 * 1024 * 1024) { $("msgErr").textContent = "That file is over the 25 MB limit."; return; }
+  $("msgErr").textContent = "";
+  setAttachment(f);
+};
+$("chatDlg").addEventListener("close", () => setAttachment(null));
+
+const fileSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} kB` : `${(n / 1048576).toFixed(1)} MB`;
+function fileHTML(f, msgId) {
+  return `<span class="file" title="${esc(f.name)}"><span class="fname">📎 ${esc(f.name)} · ${fileSize(f.size)}</span>
+    <button type="button" data-dl="${esc(f.id)}" data-name="${esc(f.name)}">Download</button>
+    ${EMBED ? `<button type="button" data-imp="${esc(f.id)}" data-msg="${esc(msgId)}" data-name="${esc(f.name)}" data-size="${f.size}">Import</button>` : ""}</span>`;
+}
+
+// one listener for every file button, wherever it is drawn
+document.addEventListener("click", async e => {
+  const dl = e.target.closest("[data-dl]"), imp = e.target.closest("[data-imp]");
+  if (dl) {
+    // fetched with the key, then saved: a plain link can't carry the key
+    try {
+      const r = await fetch(`/api/files/${encodeURIComponent(dl.dataset.dl)}`, { headers: KEY ? { "X-Board-Key": KEY } : {} });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `server said ${r.status}`);
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement("a");
+      a.href = url; a.download = dl.dataset.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (err) { alertIn(dl, err.message); }
+  } else if (imp) {
+    parent.postMessage({ type: "station-board:import", msgId: imp.dataset.msg,
+      file: { id: imp.dataset.imp, name: imp.dataset.name, size: +imp.dataset.size } }, "*");
+  }
+});
+// a failed download says so beside its button, where the tap was
+function alertIn(btn, text) {
+  const note = document.createElement("span");
+  note.className = "err"; note.style.margin = "0"; note.textContent = text;
+  btn.after(note);
+  setTimeout(() => note.remove(), 6000);
+}
 $("msgText").addEventListener("keydown", e => {
   // Enter sends, Shift+Enter starts a new line — for anyone with a keyboard
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("msgSend").click(); }

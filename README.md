@@ -99,6 +99,14 @@ to it opens the board, where people:
   several), or whoever the device is set to with **I'm …**. **Change** sends
   as someone else on the list.
 - **chat**: each conversation keeps its history. Replying counts as Got it.
+- **send a project**: in a project, **Export project ▾ → Send…** sends its
+  zip, the same one Download saves, to a person or to a station's screen, with
+  an optional note. It's from whoever is logged on at the station.
+  The message arrives with an **Import** button that loads the project in one
+  tap (counting as Got it). In a chat, 📎 attaches a zip from disk instead, and
+  any zip in a conversation can be downloaded. Only zip files, up to 25 MB, are
+  accepted; they're kept in `station_board/board-files/` on the host and
+  removed along with their message.
 - leave a **message for a station**, with the **Message** button on its card,
   even when nobody is logged on there. It shows on that station's screen until
   someone there taps Got it or Reply. A reply goes to the sender, from whoever

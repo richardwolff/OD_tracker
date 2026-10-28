@@ -34,10 +34,15 @@ State
             than to): it shows on that station's screen, for whoever is or
             comes to be there, until someone answers it. A reply that answers
             one carries a copy of it (re), so the conversation keeps its context.
+            A message can carry a project zip (file): uploaded first to
+            POST /api/files, kept in board-files/ beside the state file, fetched
+            from GET /api/files/<id>, and deleted once no message refers to it.
+  files     id -> name, size and upload time of each zip held
 """
 
 import argparse
 import hashlib
+import re
 import hmac
 import json
 import os
@@ -50,7 +55,7 @@ import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 HERE = Path(__file__).resolve().parent
 
@@ -60,6 +65,8 @@ ONLINE_MS = 20_000     # a station polls every few seconds; silent this long = o
 KEEP_ACKED_MS = 7 * 24 * 3600_000   # answered messages stay a week, as chat history
 MAX_MESSAGES = 3000
 LOGIN_FAILS = 5        # wrong passwords allowed per minute before logins pause
+MAX_FILE = 25 * 1024 * 1024    # a project zip is a few hundred kB; this is plenty
+ORPHAN_FILE_MS = 3600_000      # an upload no message ever used is dropped after an hour
 
 
 def now_ms():
@@ -84,6 +91,8 @@ class Board:
         self.stations = {}
         self.presence = {}     # person -> {station: since}
         self.messages = []
+        self.files = {}        # id -> {name, size, at}
+        self.files_dir = self.path.parent / "board-files"
         self._load()
 
     # ---------------------------------------------------------------- disk
@@ -105,10 +114,11 @@ class Board:
             # files from before multi-station log-on held one {station, since}
             self.presence[person] = {v["station"]: v["since"]} if "station" in v else dict(v)
         self.messages = data.get("messages", [])
+        self.files = data.get("files", {})
 
     def _save(self):
         data = {"people": self.people, "stations": self.stations,
-                "presence": self.presence, "messages": self.messages}
+                "presence": self.presence, "messages": self.messages, "files": self.files}
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=1))
         os.replace(tmp, self.path)   # atomic, so a power cut never leaves half a file
@@ -131,7 +141,38 @@ class Board:
         if len(keep) != len(self.messages):
             self.messages = keep
             changed = True
+        # a zip goes with the last message that carries it
+        used = {m["file"]["id"] for m in self.messages if m.get("file")}
+        for fid, f in list(self.files.items()):
+            if fid not in used and t - f["at"] > ORPHAN_FILE_MS:
+                del self.files[fid]
+                (self.files_dir / f"{fid}.zip").unlink(missing_ok=True)
+                changed = True
         return changed
+
+    # ---------------------------------------------------------------- files
+    def add_file(self, name, data):
+        """Keep an uploaded zip; returns its {id, name, size}."""
+        fid = uuid.uuid4().hex[:16]
+        self.files_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.files_dir / f"{fid}.part"
+        tmp.write_bytes(data)
+        os.replace(tmp, self.files_dir / f"{fid}.zip")
+        with self.lock:
+            self.files[fid] = {"name": name, "size": len(data), "at": now_ms()}
+            self._save()
+        return {"id": fid, "name": name, "size": len(data)}
+
+    def file(self, fid):
+        """(name, bytes) for a zip held here, or None."""
+        with self.lock:
+            f = self.files.get(fid)
+        if not f:
+            return None
+        try:
+            return f["name"], (self.files_dir / f"{fid}.zip").read_bytes()
+        except OSError:
+            return None
 
     def _add_to_roster(self, name):
         if name.lower() not in (n.lower() for n in self.people):
@@ -223,22 +264,27 @@ class Board:
                 del self.presence[person]
             self._save()
 
-    def send(self, sender, text, to=None, to_station=None, answering=None):
+    def send(self, sender, text, to=None, to_station=None, answering=None, file_id=None):
         """To a person or to a station. Anyone on the roster can be written
         to, logged on or not: a reply must reach someone who has since left.
         Writing to someone also answers whatever they had sent you, so those
         stop showing; `answering` names one more message it answers, which is
         how a reply to a note left at a station clears it. Returns the new
-        message, or None if there is no such person or station."""
+        message, or None if there is no such person, station or file."""
         with self.lock:
             if to and to not in self.people:
                 return None
             if to_station and to_station not in self.stations:
                 return None
+            if file_id and file_id not in self.files:
+                return None
             self._add_to_roster(sender)
             t = now_ms()
             m = {"id": uuid.uuid4().hex[:12], "from": sender,
                  "text": text, "at": t, "ackAt": None}
+            if file_id:
+                f = self.files[file_id]
+                m["file"] = {"id": file_id, "name": f["name"], "size": f["size"]}
             if to:
                 m["to"] = to
                 for old in self.messages:
@@ -390,6 +436,22 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self._error(HTTPStatus.NOT_FOUND, "board.html is missing beside server.py")
             return self._send(HTTPStatus.OK, body, "text/html; charset=utf-8")
+        if url.path.startswith("/api/files/"):
+            if not self._authed():
+                return
+            got = self.board.file(url.path.rsplit("/", 1)[-1])
+            if not got:
+                return self._error(HTTPStatus.NOT_FOUND, "that file has gone — it is kept a week")
+            name, data = got
+            self.send_response(HTTPStatus.OK)
+            self._cors()
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(name)}")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if url.path in ("/api/state", "/api/thread"):
             if not self._authed():
                 return
@@ -404,8 +466,34 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.board.snapshot(arg("station"), arg("me")))
         self._error(HTTPStatus.NOT_FOUND, "not found")
 
+    def _upload(self, url):
+        """POST /api/files?name=<file name>, the zip itself as the body.
+        Project zips only: anything that isn't one is refused, so the board
+        can't be used to pass other files around."""
+        if not self._authed():
+            return
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            return self._error(HTTPStatus.BAD_REQUEST, "the upload was empty")
+        if n > MAX_FILE:
+            self.close_connection = True       # don't read 25 MB+ just to refuse it
+            return self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                               f"files are limited to {MAX_FILE // (1024 * 1024)} MB")
+        data = self.rfile.read(n)
+        raw = parse_qs(url.query).get("name", ["project.zip"])[0]
+        # a plain file name: no folders, nothing odd, and it ends .zip
+        name = re.sub(r"[^\w .()+-]", "_", Path(raw).name).strip(" .")[:80] or "project"
+        if not name.lower().endswith(".zip"):
+            name += ".zip"
+        if not data.startswith(b"PK\x03\x04"):
+            return self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "only zip files can be sent")
+        self._json(self.board.add_file(name, data))
+
     def do_POST(self):
-        path = urlparse(self.path).path
+        url = urlparse(self.path)
+        path = url.path
+        if path == "/api/files":
+            return self._upload(url)
         data = self._body()
         if data is None:
             return self._error(HTTPStatus.BAD_REQUEST, "expected a JSON object")
@@ -441,14 +529,17 @@ class Handler(BaseHTTPRequestHandler):
             sender, to = clean_name(data.get("from")), clean_name(data.get("to"))
             to_station = clean_name(data.get("toStation"))
             text = str(data.get("text") or "").strip()[:MAX_TEXT]
-            if not sender or not (to or to_station) or not text:
+            file_id = str((data.get("file") or {}).get("id") or "") or None
+            # a zip can go on its own; otherwise there has to be something to say
+            if not sender or not (to or to_station) or not (text or file_id):
                 return self._error(HTTPStatus.BAD_REQUEST, "from, to (or toStation) and text are required")
             if sender == to:
                 return self._error(HTTPStatus.BAD_REQUEST, "pick someone else to write to")
             if not b.send(sender, text, to=to or None, to_station=None if to else to_station,
-                          answering=str(data.get("answering") or "") or None):
+                          answering=str(data.get("answering") or "") or None, file_id=file_id):
                 return self._error(HTTPStatus.NOT_FOUND,
-                                   f"{to} is not on the board's list of names" if to
+                                   "that file has gone — send it again" if file_id and file_id not in b.files
+                                   else f"{to} is not on the board's list of names" if to
                                    else f"there is no station called {to_station}")
         elif path == "/api/messages/ack":
             b.ack(str(data.get("id") or ""))
