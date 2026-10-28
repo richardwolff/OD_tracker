@@ -333,7 +333,6 @@ html.touch .cell-edit { padding: 8px 10px; margin: -8px -10px; }
 input[type="checkbox"] { accent-color: var(--series-1); width: 15px; height: 15px; cursor: pointer; }
 .hint { font-size: 12.5px; color: var(--text-muted); margin: 12px 0 0; }
 .no-data { text-align: center; color: var(--text-muted); font-size: 13.5px; padding: 26px 10px; }
-.table-foot { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
 
 /* ---------- notes ---------- */
 textarea.notes {
@@ -347,6 +346,16 @@ textarea.notes::placeholder { color: var(--text-muted); }
 
 /* ---------- metadata view ---------- */
 .meta-stack { display: grid; gap: 14px; }
+.collected { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.collected-label { font-size: 11.5px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+/* as tall as its label: an inline choice, not a full-size button */
+.collected-btn, html.touch .collected-btn {
+  font-size: 12.5px; line-height: 15px; min-height: 0; padding: 0 8px; border-radius: 6px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
+.collected-btn.empty { color: var(--text-secondary); }
+.sb-menu.collector-menu { width: 260px; }
+.collector-menu .tick { width: 1.1em; color: var(--series-1); font-weight: 700; flex: none; }
 .meta-groups { display: grid; gap: 16px; }
 /* One note per group, side by side when there is room — a project with six
    groups should not be six screens of scrolling. */
@@ -1222,6 +1231,9 @@ html.touch .sb-msg-actions button { min-height: 42px; }
   </form>
 </dialog>
 
+<!-- Metadata → Collected by: the people who have collected before, and a new one -->
+<div class="sb-menu collector-menu" id="collectorMenu" role="menu" hidden></div>
+
 <!-- the compare chart: every culture, or one line per replicate group -->
 <div class="sb-menu cmp-mode-menu" id="cmpModeMenu" role="menu" hidden>
   <button type="button" class="sb-item" role="menuitemradio" data-mode="all">All cultures</button>
@@ -1524,6 +1536,7 @@ function load() {
         for (const p of parsed.projects) {
           if (!Array.isArray(p.cultures)) p.cultures = [];
           if (typeof p.notes !== "string") p.notes = "";   // saved before project notes existed
+          p.collectedBy = cleanNames(p.collectedBy);       // saved before "Collected by" existed
           normaliseCultures(p.cultures);
           normaliseGroups(p);
         }
@@ -1835,6 +1848,11 @@ function renderMeta() {
         <div class="cmp-head"><div>
           <h2 class="cmp-title">Project notes</h2>
         </div></div>
+        <div class="collected">
+          <span class="collected-label">Collected by</span>
+          <button type="button" class="collected-btn ${(p.collectedBy || []).length ? "" : "empty"}" id="collectedBtn" aria-haspopup="menu"
+                  title="Who took these readings">${collectedLabel(p)}</button>
+        </div>
         <textarea class="notes" data-proj-notes spellcheck="true"
           placeholder="Experiment and question, date, media and supplements, strain background, incubator temperature and shaking speed, spectrophotometer, who ran it…">${esc(p.notes || "")}</textarea>
       </div>
@@ -1861,6 +1879,7 @@ function renderMeta() {
       <p class="hint">Saved automatically.</p>
     </div>`;
 
+  document.getElementById("collectedBtn").onclick = openCollectorMenu;
   const proj = metaEl.querySelector("[data-proj-notes]");
   proj.oninput = () => { p.notes = proj.value; save(); };
   metaEl.querySelectorAll("[data-grp-notes]").forEach(t => {
@@ -1871,8 +1890,115 @@ function renderMeta() {
   });
 }
 
+/* ---------- Collected by ----------
+   Who took a project's readings: any number of names, picked from everyone
+   who has collected before. That list is every name on any project here,
+   the names added on this station before (kept beside the projects), and the
+   Station Board's people when the station is on a board. Tapping a name
+   adds or removes it; the menu stays open, since a run is often two people. */
+const COLLECTORS_KEY = STORE_KEY + ".collectors";
+
+function cleanNames(v) {
+  const out = [];
+  for (const n of Array.isArray(v) ? v : []) {
+    const name = typeof n === "string" ? n.trim().replace(/\s+/g, " ").slice(0, 40) : "";
+    if (name && !out.some(o => o.toLowerCase() === name.toLowerCase())) out.push(name);
+  }
+  return out;
+}
+
+function knownCollectors() {
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem(COLLECTORS_KEY)) || []; } catch (e) { /* none yet */ }
+  const board = typeof sbState !== "undefined" && sbState ? sbState.people.map(p => p.name) : [];
+  return cleanNames([...saved, ...state.projects.flatMap(p => p.collectedBy || []), ...board])
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
+const collectedLabel = p => (p.collectedBy || []).length
+  ? `${esc(p.collectedBy.join(", "))} ▾` : "Choose ▾";
+
+const collectorMenu = document.getElementById("collectorMenu");
+let collectorAdding = false;
+
+function renderCollectorMenu() {
+  const p = P();
+  if (!p) return;
+  const chosen = p.collectedBy || [];
+  // whoever is chosen is always listed, even if it came from an imported project
+  const names = cleanNames([...chosen, ...knownCollectors()]);
+  collectorMenu.innerHTML =
+      (names.length ? "" : `<div class="sb-note">Nobody yet — add the first name.</div>`)
+    + names.map(n => `<button type="button" class="sb-item" role="menuitemcheckbox"
+        aria-checked="${chosen.includes(n)}" data-name="${esc(n)}">
+        <span class="tick">${chosen.includes(n) ? "✓" : ""}</span>${esc(n)}</button>`).join("")
+    + (collectorAdding
+      ? `<form class="sb-add-row" id="collectorAddForm"><input id="collectorAddName" maxlength="40" placeholder="Name" autocomplete="off">
+           <button type="submit" class="primary">Add</button></form>`
+      : `<button type="button" class="sb-item add" role="menuitem" id="collectorAddBtn">+ Add name</button>`);
+
+  collectorMenu.querySelectorAll("[data-name]").forEach(b => {
+    b.onclick = () => {
+      const n = b.dataset.name;
+      p.collectedBy = chosen.includes(n) ? chosen.filter(x => x !== n) : [...chosen, n];
+      collectedChanged(p);
+    };
+  });
+  const addBtn = document.getElementById("collectorAddBtn");
+  if (addBtn) addBtn.onclick = () => {
+    collectorAdding = true; renderCollectorMenu();
+    document.getElementById("collectorAddName").focus();
+  };
+  const form = document.getElementById("collectorAddForm");
+  if (form) form.onsubmit = e => {
+    e.preventDefault();
+    const name = cleanNames([document.getElementById("collectorAddName").value])[0];
+    if (!name) return;
+    // remembered on this station for the next project, and chosen for this one
+    try { localStorage.setItem(COLLECTORS_KEY, JSON.stringify(cleanNames([...knownCollectors(), name]))); } catch (x) { /* this project still has it */ }
+    const existing = knownCollectors().find(n => n.toLowerCase() === name.toLowerCase()) || name;
+    if (!(p.collectedBy || []).includes(existing)) p.collectedBy = [...(p.collectedBy || []), existing];
+    collectorAdding = false;
+    collectedChanged(p);
+  };
+}
+
+function collectedChanged(p) {
+  save();
+  const btn = document.getElementById("collectedBtn");
+  if (btn) { btn.innerHTML = collectedLabel(p); btn.classList.toggle("empty", !p.collectedBy.length); }
+  renderCollectorMenu();
+}
+
+function openCollectorMenu() {
+  if (!collectorMenu.hidden) return closeCollectorMenu();
+  const btn = document.getElementById("collectedBtn");
+  collectorAdding = false;
+  renderCollectorMenu();
+  collectorMenu.hidden = false;
+  const r = btn.getBoundingClientRect(), w = collectorMenu.offsetWidth;
+  collectorMenu.style.top = `${Math.round(r.bottom + 6)}px`;
+  collectorMenu.style.left = `${Math.round(Math.min(Math.max(10, r.left), innerWidth - w - 10))}px`;
+  btn.setAttribute("aria-expanded", "true");
+}
+function closeCollectorMenu() {
+  // by id, not the const: openProject can run before this part of the script has
+  document.getElementById("collectorMenu").hidden = true;
+  const btn = document.getElementById("collectedBtn");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+document.addEventListener("pointerdown", e => {
+  const btn = document.getElementById("collectedBtn");
+  if (!collectorMenu.hidden && !collectorMenu.contains(e.target) && !(btn && btn.contains(e.target))) closeCollectorMenu();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !collectorMenu.hidden) closeCollectorMenu(); });
+// the page scrolling under it would leave it pointing at the wrong place
+addEventListener("scroll", () => { if (!collectorMenu.hidden) closeCollectorMenu(); }, { passive: true });
+addEventListener("resize", () => { if (!collectorMenu.hidden) closeCollectorMenu(); });
+
 function openProject(id) {
   cmpZoom = null;
+  closeCollectorMenu();
   openId = id;
   view = "cards";
   metaShown = null;
@@ -2189,7 +2315,6 @@ function dataHTML(c) {
     </tr>` : ""}`;
   }).join("");
 
-  const excluded = c.measurements.filter(m => m.use === false).length;
 
   return `<div class="table-wrap"><table>
       <thead><tr>
@@ -2199,12 +2324,7 @@ function dataHTML(c) {
         <th class="c" title="Include in growth-rate fit">Fit</th><th></th>
       </tr></thead>
       <tbody>${rows}</tbody>
-    </table></div>
-    <div class="table-foot">
-      <button data-act="export">Export CSV</button>
-      ${excluded ? `<span class="hint" style="margin:0">${excluded} point${excluded > 1 ? "s" : ""} excluded from fit</span>` : ""}
-    </div>
-    <p class="hint">Untick <em>Fit</em> to drop lag- or stationary-phase points — μ is computed only from the ticked rows.</p>`;
+    </table></div>`;
 }
 
 function notesHTML(c) {
@@ -2294,10 +2414,6 @@ function wireCard(el, c, fit, used) {
     const m = c.measurements.find(x => x.id === e.currentTarget.closest("tr").dataset.m);
     if (m) { m.use = e.currentTarget.checked; save(); renderCard(c.id); }
   });
-
-  const exportBtn = el.querySelector('[data-act="export"]');
-  if (exportBtn) exportBtn.onclick = () =>
-    downloadCSV(csvFor([c]), exportName(P() ? P().name : "", c.name));
 
   const svg = el.querySelector('[data-act="chart"]');
   if (svg) drawChart(svg, el.querySelector("[data-tip]"), c, fit);
@@ -3842,6 +3958,7 @@ function metadataReport(p) {
   if (p.createdAt) L.push(`Project created  ${fmtDate(p.createdAt)}`);
   // "when was this experiment performed" is the readings, not the project record
   L.push(`Experiment run   ${win ? fmtWindow(win) : "no readings recorded"}`);
+  L.push(`Collected by     ${(p.collectedBy || []).length ? p.collectedBy.join(", ") : "not recorded"}`);
   L.push(`Cultures         ${cs.length}` + (groups.length
     ? ` in ${groups.length} replicate group${groups.length === 1 ? "" : "s"}` : ""));
   L.push(`Readings         ${readings}`);
@@ -4020,7 +4137,6 @@ function exportNameAs(ext, ...parts) {
   if (!tokens.length) tokens.push("OD_tracker");
   return `${tokens.join("_")}_${dateStamp()}.${ext}`;
 }
-const exportName = (...parts) => exportNameAs("csv", ...parts);
 const q = s => `"${String(s).replace(/"/g, '""')}"`;
 
 function csvFor(cultures) {
@@ -4156,7 +4272,7 @@ function parseCSV(text) {
    at the first truly empty line (a blank line inside a note is padded). */
 function parseMetadataReport(text) {
   const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
-  const out = { name: "", createdAt: null, notes: "", groupNotes: new Map() };
+  const out = { name: "", createdAt: null, notes: "", collectedBy: [], groupNotes: new Map() };
   const takeNote = (from, indent) => {
     const pad = " ".repeat(indent);
     const got = [];
@@ -4172,6 +4288,8 @@ function parseMetadataReport(text) {
     let m;
     if (lines[i - 1] === RULE2 && lines[i + 1] === RULE2) { section = line; i++; continue; }
     if ((m = line.match(/^Project {2,}(.+)$/))) out.name = m[1].trim();
+    else if ((m = line.match(/^Collected by {2,}(.+)$/)))
+      out.collectedBy = m[1].trim() === "not recorded" ? [] : cleanNames(m[1].split(","));
     else if ((m = line.match(/^Project created {2,}(.+)$/))) {
       const t = Date.parse(m[1].trim());
       if (Number.isFinite(t)) out.createdAt = t;
@@ -4202,7 +4320,7 @@ function projectFromCSV(text, meta, fallbackName) {
   const num  = (r, name) => { const v = parseFloat(cell(r, name)); return Number.isFinite(v) ? v : null; };
 
   const p = { id: uid(), name: meta.name || fallbackName, createdAt: meta.createdAt || Date.now(),
-              notes: meta.notes || "", cultures: [], groups: [] };
+              notes: meta.notes || "", collectedBy: meta.collectedBy || [], cultures: [], groups: [] };
   const byName = new Map();   // culture name -> culture
   const groups = new Map();   // group name -> group
 
@@ -4275,6 +4393,7 @@ function projectFromJSON(text) {
   if (typeof p.name !== "string" || !p.name.trim()) throw new Error("The project file has no project name.");
   if (!Array.isArray(p.cultures)) p.cultures = [];
   if (typeof p.notes !== "string") p.notes = "";
+  p.collectedBy = cleanNames(p.collectedBy);
   if (!Number.isFinite(p.createdAt)) p.createdAt = Date.now();
   for (const c of p.cultures) {
     if (!c || typeof c !== "object") throw new Error("The project file has a broken culture record.");
@@ -4353,9 +4472,8 @@ importFileIn.onchange = async () => {
    Firefox/Safari have no picker, so they keep the plain download. Must be
    called straight out of a click: the picker needs the user gesture.
 
-   Both exports share one picker id on purpose: the data and the metadata for a
-   run belong in the same folder, so the second save should open where the first
-   one went.                                                                  */
+   The id still says "csv" from when cultures exported their own CSVs; it stays,
+   so the picker keeps opening in the folder people have been saving to.      */
 async function downloadBlob(blob, filename, ext, typeLabel) {
   if (window.showSaveFilePicker) {
     try {
@@ -4383,8 +4501,6 @@ async function downloadBlob(blob, filename, ext, typeLabel) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-const downloadCSV = (text, name) =>
-  downloadBlob(new Blob([text], { type: "text/csv;charset=utf-8" }), name, ".csv", "CSV file");
 const downloadZip = (blob, name) => downloadBlob(blob, name, ".zip", "ZIP archive");
 
 /* ============================================================
