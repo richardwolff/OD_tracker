@@ -346,7 +346,11 @@ textarea.notes::placeholder { color: var(--text-muted); }
 
 /* ---------- metadata view ---------- */
 .meta-stack { display: grid; gap: 14px; }
-.collected { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+/* label | choice, one row each; the label column is as wide as the longest label */
+.pickers { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px;
+           align-items: center; justify-items: start; margin-bottom: 10px; }
+.collected { display: contents; }
+/* the labels line up, so the two choices sit in one column */
 .collected-label { font-size: 11.5px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
 /* as tall as its label: an inline choice, not a full-size button */
 .collected-btn, html.touch .collected-btn {
@@ -354,8 +358,18 @@ textarea.notes::placeholder { color: var(--text-muted); }
   max-width: 100%; overflow: hidden; text-overflow: ellipsis;
 }
 .collected-btn.empty { color: var(--text-secondary); }
-.sb-menu.collector-menu { width: 260px; }
-.collector-menu .tick { width: 1.1em; color: var(--series-1); font-weight: 700; flex: none; }
+/* a group following the project: the project's value, shown quieter */
+.collected-btn.inherited { color: var(--text-muted); border-style: dashed; }
+.sb-menu.picker-menu { width: 260px; }
+.conc-row { display: flex; gap: 6px; padding: 0 6px 6px 32px; }
+.conc-row input, .conc-row select {
+  font: inherit; font-size: 13.5px; color: var(--text-primary); background: var(--page);
+  border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px;
+}
+.conc-row input { width: 90px; min-width: 0; }
+.conc-row input:focus, .conc-row select:focus { outline: none; border-color: var(--series-1); }
+html.touch .conc-row input, html.touch .conc-row select { font-size: 15px; padding: 8px 10px; }
+.picker-menu .tick { width: 1.1em; color: var(--series-1); font-weight: 700; flex: none; }
 .meta-groups { display: grid; gap: 16px; }
 /* One note per group, side by side when there is room — a project with six
    groups should not be six screens of scrolling. */
@@ -1231,8 +1245,8 @@ html.touch .sb-msg-actions button { min-height: 42px; }
   </form>
 </dialog>
 
-<!-- Metadata → Collected by: the people who have collected before, and a new one -->
-<div class="sb-menu collector-menu" id="collectorMenu" role="menu" hidden></div>
+<!-- Metadata → Collected by / Strain: what has been used before, and a new one -->
+<div class="sb-menu picker-menu" id="pickerMenu" role="menu" hidden></div>
 
 <!-- the compare chart: every culture, or one line per replicate group -->
 <div class="sb-menu cmp-mode-menu" id="cmpModeMenu" role="menu" hidden>
@@ -1457,6 +1471,10 @@ function normaliseGroups(p) {
     if (!g || typeof g.id !== "string" || live.has(g.id)) return false;
     if (typeof g.name !== "string" || !g.name.trim()) g.name = "Replicates";
     if (typeof g.notes !== "string") g.notes = "";   // saved before group notes existed
+    // a group's own Strain, Carbon source… (absent = same as the project); never a "Collected by"
+    delete g.collectedBy;
+    for (const f of pickerFields())
+      if (Object.prototype.hasOwnProperty.call(g, f.field)) g[f.field] = cleanEntries(g[f.field], f);
     delete g.kind;                     // there is only one kind of group now
     live.set(g.id, g);
     return true;
@@ -1536,7 +1554,8 @@ function load() {
         for (const p of parsed.projects) {
           if (!Array.isArray(p.cultures)) p.cultures = [];
           if (typeof p.notes !== "string") p.notes = "";   // saved before project notes existed
-          p.collectedBy = cleanNames(p.collectedBy);       // saved before "Collected by" existed
+          // lists saved before a field existed start empty
+          for (const f of pickerFields()) p[f.field] = cleanEntries(p[f.field], f);
           normaliseCultures(p.cultures);
           normaliseGroups(p);
         }
@@ -1848,13 +1867,9 @@ function renderMeta() {
         <div class="cmp-head"><div>
           <h2 class="cmp-title">Project notes</h2>
         </div></div>
-        <div class="collected">
-          <span class="collected-label">Collected by</span>
-          <button type="button" class="collected-btn ${(p.collectedBy || []).length ? "" : "empty"}" id="collectedBtn" aria-haspopup="menu"
-                  title="Who took these readings">${collectedLabel(p)}</button>
-        </div>
+        <div class="pickers">${pickerFields().map(f => pickerRowHTML(p, f.field)).join("")}</div>
         <textarea class="notes" data-proj-notes spellcheck="true"
-          placeholder="Experiment and question, date, media and supplements, strain background, incubator temperature and shaking speed, spectrophotometer, who ran it…">${esc(p.notes || "")}</textarea>
+          placeholder="Experiment and question, date, media and supplements, incubator temperature and shaking speed, spectrophotometer…">${esc(p.notes || "")}</textarea>
       </div>
 
       <div class="cmp-card">
@@ -1870,8 +1885,9 @@ function renderMeta() {
               <span class="meta-grp-name">${esc(g.name)}</span>
               <span class="meta-grp-sub">${n} replicate${n === 1 ? "" : "s"}</span>
             </div>
+            <div class="pickers">${groupFields().map(f => pickerRowHTML(g, f.field)).join("")}</div>
             <textarea class="notes meta-note" data-grp-notes="${g.id}" spellcheck="true"
-              placeholder="Condition, carbon source, inducer and concentration, anything done to this set alone…">${esc(g.notes || "")}</textarea>
+              placeholder="Inducer and concentration, anything else done to this set alone…">${esc(g.notes || "")}</textarea>
           </div>`;
         }).join("")}</div>` : ""}
       </div>
@@ -1879,7 +1895,9 @@ function renderMeta() {
       <p class="hint">Saved automatically.</p>
     </div>`;
 
-  document.getElementById("collectedBtn").onclick = openCollectorMenu;
+  metaEl.querySelectorAll("[data-picker]").forEach(b => {
+    b.onclick = () => { const obj = pickerTargetOf(b.dataset.target); if (obj) openPicker(b.dataset.picker, obj); };
+  });
   const proj = metaEl.querySelector("[data-proj-notes]");
   proj.oninput = () => { p.notes = proj.value; save(); };
   metaEl.querySelectorAll("[data-grp-notes]").forEach(t => {
@@ -1890,115 +1908,311 @@ function renderMeta() {
   });
 }
 
-/* ---------- Collected by ----------
-   Who took a project's readings: any number of names, picked from everyone
-   who has collected before. That list is every name on any project here,
-   the names added on this station before (kept beside the projects), and the
-   Station Board's people when the station is on a board. Tapping a name
-   adds or removes it; the menu stays open, since a run is often two people. */
-const COLLECTORS_KEY = STORE_KEY + ".collectors";
+/* ---------- Collected by, Strain ----------
+   Project lists picked from what has been used before: who took the readings,
+   and which strains were grown. Each holds any number of entries (a run is
+   often two people, or two strains). What is offered is every entry on any
+   project here, plus those added on this station before (kept beside the
+   projects), plus, for names, the Station Board's people when the station is
+   on a board. Tapping an entry adds or removes it; the menu stays open. */
+/* The lists, in the order shown. A function declaration so load() can use it
+   before this point of the script runs. `sep` joins them in the metadata
+   report: commas for names, semicolons for anything that may hold a comma
+   ("BW25113 (Keio, ΔlacZ)", "glucose 0.4%, w/v"). */
+function pickerFields() {
+  return [
+    { field: "collectedBy",     label: "Collected by",    max: 40, sep: "," },
+    { field: "strains",         label: "Strain",          max: 60, sep: ";" },
+    { field: "carbonSources",   label: "Carbon source",   max: 60, sep: ";", conc: true, unit: "mM" },
+    { field: "nitrogenSources", label: "Nitrogen source", max: 60, sep: ";", conc: true, unit: "mM" },
+    { field: "buffers",         label: "Buffer",          max: 60, sep: ";", conc: true, unit: "mM" },
+    // one number each, not a list: stored as a plain number (null when not set)
+    { field: "temperature",     label: "Temperature",     max: 12, sep: ",", single: true, suffix: "°C",  lo: -20, hi: 120 },
+    { field: "rpm",             label: "RPM",             max: 12, sep: ",", single: true, suffix: "rpm", lo: 0,   hi: 5000 }
+  ];
+}
 
-function cleanNames(v) {
+/* The medium's lists carry a concentration with each entry: the substance is
+   one item on the list ("Glucose"), and each project says how much of it
+   ({ name, amount, unit }; amount null when not given). Also a function
+   declaration, for load(). */
+function concUnits() { return ["% (w/v)", "% (v/v)", "g/L", "mg/L", "M", "mM", "µM"]; }
+
+// a list as it should be stored: names for the plain lists, entries for the medium's
+function cleanEntries(v, f) {
+  if (f.single) {
+    // a number in range, from a number, a string ("37 °C"), or the last of a list
+    const raw = Array.isArray(v) ? v[v.length - 1] : v;
+    const n = typeof raw === "number" ? raw : parseFloat(raw);
+    return Number.isFinite(n) && n >= f.lo && n <= f.hi ? n : null;
+  }
+  if (!f.conc) return cleanNames(v, f.max);
+  const out = [];
+  for (const e of Array.isArray(v) ? v : []) {
+    // a plain string is a list saved before concentrations: a name with no amount
+    const raw = typeof e === "string" ? { name: e } : e && typeof e === "object" ? e : null;
+    const name = raw && typeof raw.name === "string" ? raw.name.trim().replace(/\s+/g, " ").slice(0, f.max) : "";
+    if (!name || out.some(o => o.name.toLowerCase() === name.toLowerCase())) continue;
+    out.push({
+      name,
+      amount: Number.isFinite(raw.amount) && raw.amount >= 0 ? raw.amount : null,
+      unit: concUnits().includes(raw.unit) ? raw.unit : f.unit
+    });
+  }
+  return out;
+}
+
+const entryName = e => (typeof e === "number" ? String(e) : typeof e === "string" ? e : e.name);
+/* Replicate groups have the same lists, bar "Collected by". A group follows
+   its project's value until it is given one of its own: the field is absent
+   from the group until then, and deleting it makes the group follow again. */
+const groupFields = () => pickerFields().filter(f => f.field !== "collectedBy");
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const effective = (obj, f, proj) => (obj === proj || hasOwn(obj, f.field) ? obj[f.field] : proj[f.field]);
+// the choices as a list, whether the field holds one value or several; for a
+// group, its own or its project's
+const listFrom = (v, f) => (f.single ? (v === null || v === undefined ? [] : [v]) : v || []);
+const listOf = (obj, f, proj = obj) => listFrom(effective(obj, f, proj), f);
+const fmtAmount = a => String(+a.toPrecision(6));
+// "Glucose 0.4 % (w/v)" on screen; "Glucose @ 0.4 % (w/v)" in the report, so it reads back apart
+const entryText = (e, f, report = false) => f.single ? `${fmtAmount(+e)} ${f.suffix}`
+  : !f.conc || e.amount === null ? entryName(e)
+  : `${e.name}${report ? " @" : ""} ${fmtAmount(e.amount)} ${e.unit}`;
+
+// what each menu says and where its remembered entries are kept
+const PICKER_UI = {
+  collectedBy:     { title: "Who took these readings", store: ".collectors", add: "+ Add name", placeholder: "Name",
+                     none: "Nobody yet — add the first name.",
+                     extra: () => (typeof sbState !== "undefined" && sbState ? sbState.people.map(p => p.name) : []) },
+  strains:         { title: "The strain or strains grown in this project", store: ".strains", add: "+ Add strain",
+                     placeholder: "Strain", none: "No strains yet — add the first one." },
+  carbonSources:   { title: "Carbon source(s) in the medium", store: ".carbonSources", add: "+ Add carbon source",
+                     placeholder: "e.g. Glucose", none: "None yet — add the first one." },
+  nitrogenSources: { title: "Nitrogen source(s) in the medium", store: ".nitrogenSources", add: "+ Add nitrogen source",
+                     placeholder: "e.g. NH₄Cl", none: "None yet — add the first one." },
+  buffers:         { title: "Buffer in the medium", store: ".buffers", add: "+ Add buffer",
+                     placeholder: "e.g. MOPS", none: "None yet — add the first one." },
+  temperature:     { title: "Incubation temperature", store: ".temperatures", add: "+ Add temperature",
+                     placeholder: "°C, e.g. 37", none: "None yet — add the first one." },
+  rpm:             { title: "Shaking speed", store: ".rpms", add: "+ Add speed",
+                     placeholder: "rpm, e.g. 220", none: "None yet — add the first one." }
+};
+const PICKERS = Object.fromEntries(pickerFields().map(f => [f.field,
+  { extra: () => [], ...f, ...PICKER_UI[f.field], store: STORE_KEY + PICKER_UI[f.field].store }]));
+
+function cleanNames(v, max = 40) {
   const out = [];
   for (const n of Array.isArray(v) ? v : []) {
-    const name = typeof n === "string" ? n.trim().replace(/\s+/g, " ").slice(0, 40) : "";
+    const name = typeof n === "string" ? n.trim().replace(/\s+/g, " ").slice(0, max) : "";
     if (name && !out.some(o => o.toLowerCase() === name.toLowerCase())) out.push(name);
   }
   return out;
 }
 
-function knownCollectors() {
+function knownValues(field) {
+  const cfg = PICKERS[field];
   let saved = [];
-  try { saved = JSON.parse(localStorage.getItem(COLLECTORS_KEY)) || []; } catch (e) { /* none yet */ }
-  const board = typeof sbState !== "undefined" && sbState ? sbState.people.map(p => p.name) : [];
-  return cleanNames([...saved, ...state.projects.flatMap(p => p.collectedBy || []), ...board])
-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  try { saved = JSON.parse(localStorage.getItem(cfg.store)) || []; } catch (e) { /* none yet */ }
+  // offered: anything used on a project here, or set on one of its groups
+  const used = state.projects.flatMap(p => [p, ...groupsOf(p).filter(g => hasOwn(g, field))])
+    .flatMap(o => listOf(o, cfg).map(entryName));
+  return cleanNames([...saved, ...used, ...cfg.extra()], cfg.max)
+    .sort(cfg.single ? (a, b) => parseFloat(a) - parseFloat(b) : (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
 
-const collectedLabel = p => (p.collectedBy || []).length
-  ? `${esc(p.collectedBy.join(", "))} ▾` : "Choose ▾";
+// joined as in the report, so "Glucose 0.4%, w/v; Acetate 0.3%" reads as two entries, not three
+const pickerLabel = (obj, field) => {
+  const cfg = PICKERS[field], list = listOf(obj, cfg, P());
+  return list.length ? `${esc(list.map(e => entryText(e, cfg)).join(cfg.sep + " "))} ▾` : "Choose ▾";
+};
+const targetId = obj => (obj === P() ? "project" : obj.id);
+const pickerTargetOf = id => (id === "project" ? P() : groupById(P(), id));
+const inheriting = (obj, field) => obj !== P() && !hasOwn(obj, field);
 
-const collectorMenu = document.getElementById("collectorMenu");
-let collectorAdding = false;
+/* The concentration last used with a substance on this station, offered the
+   next time it is ticked: a standard recipe then takes no typing. */
+const concMemoryKey = field => PICKERS[field].store + ".conc";
+function lastConc(field, name) {
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem(concMemoryKey(field))) || {}; } catch (e) { /* none yet */ }
+  const got = all[name.toLowerCase()];
+  return got && concUnits().includes(got.unit) ? { amount: Number.isFinite(got.amount) ? got.amount : null, unit: got.unit }
+                                             : { amount: null, unit: PICKERS[field].unit };
+}
+function rememberConc(field, e) {
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem(concMemoryKey(field))) || {}; } catch (x) { /* start afresh */ }
+  all[e.name.toLowerCase()] = { amount: e.amount, unit: e.unit };
+  try { localStorage.setItem(concMemoryKey(field), JSON.stringify(all)); } catch (x) { /* the project still has it */ }
+}
 
-function renderCollectorMenu() {
-  const p = P();
-  if (!p) return;
-  const chosen = p.collectedBy || [];
-  // whoever is chosen is always listed, even if it came from an imported project
-  const names = cleanNames([...chosen, ...knownCollectors()]);
-  collectorMenu.innerHTML =
-      (names.length ? "" : `<div class="sb-note">Nobody yet — add the first name.</div>`)
-    + names.map(n => `<button type="button" class="sb-item" role="menuitemcheckbox"
-        aria-checked="${chosen.includes(n)}" data-name="${esc(n)}">
-        <span class="tick">${chosen.includes(n) ? "✓" : ""}</span>${esc(n)}</button>`).join("")
-    + (collectorAdding
-      ? `<form class="sb-add-row" id="collectorAddForm"><input id="collectorAddName" maxlength="40" placeholder="Name" autocomplete="off">
-           <button type="submit" class="primary">Add</button></form>`
-      : `<button type="button" class="sb-item add" role="menuitem" id="collectorAddBtn">+ Add name</button>`);
+// one labelled row in the Metadata tab: "Strain   MG1655 ▾", for the project or a group
+const pickerBtnClass = (obj, field) => ["collected-btn",
+  listOf(obj, PICKERS[field], P()).length ? "" : "empty", inheriting(obj, field) ? "inherited" : ""].join(" ");
+const pickerRowHTML = (obj, field) => `<div class="collected">
+    <span class="collected-label">${PICKERS[field].label}</span>
+    <button type="button" class="${pickerBtnClass(obj, field)}" data-picker="${field}" data-target="${targetId(obj)}"
+            aria-haspopup="menu" title="${inheriting(obj, field) ? "Same as the project — tap to change for this group" : PICKERS[field].title}">${pickerLabel(obj, field)}</button>
+  </div>`;
 
-  collectorMenu.querySelectorAll("[data-name]").forEach(b => {
+const pickerMenu = document.getElementById("pickerMenu");
+let pickerField = null;      // which list the open menu edits,
+let pickerTarget = null;     //   on the project or on one of its groups
+let pickerAdding = false;
+
+const pickerBtn = (field, obj = pickerTarget) =>
+  metaEl.querySelector(`[data-picker="${field}"][data-target="${targetId(obj)}"]`);
+
+function renderPicker() {
+  const proj = P(), field = pickerField, cfg = PICKERS[field], p = pickerTarget;
+  if (!proj || !cfg || !p) return;
+  const isGroup = p !== proj, follows = inheriting(p, field);
+  const chosen = listOf(p, cfg, proj);
+  // a group changing a value it was following takes a copy of the project's first
+  // (a deep one: a concentration typed here must not change the project's)
+  const own = () => { if (isGroup && !hasOwn(p, field)) p[field] = JSON.parse(JSON.stringify(proj[field] ?? (cfg.single ? null : []))); };
+  const current = () => listOf(p, cfg, proj);
+  const names = chosen.map(entryName);
+  const entryOf = name => current().find(e => entryName(e) === name);
+  // whatever is chosen is always listed, even if it came from an imported project
+  const values = cleanNames([...names, ...knownValues(field)], cfg.max);
+  // a ticked substance gets its amount and unit right under it
+  const concRow = v => {
+    const e = entryOf(v);
+    return `<div class="conc-row">
+      <input type="number" step="any" min="0" inputmode="decimal" placeholder="Amount" aria-label="Amount of ${esc(v)}"
+             data-amount="${esc(v)}" value="${e.amount === null ? "" : fmtAmount(e.amount)}">
+      <select data-unit="${esc(v)}" aria-label="Unit for ${esc(v)}">${concUnits().map(u =>
+        `<option${u === e.unit ? " selected" : ""}>${u}</option>`).join("")}</select>
+    </div>`;
+  };
+  const projText = listOf(proj, cfg).map(e => entryText(e, cfg)).join(cfg.sep + " ") || "nothing set";
+  pickerMenu.innerHTML =
+      (isGroup ? `<button type="button" class="sb-item" role="menuitemradio" aria-checked="${follows}" data-same>
+          <span class="tick">${follows ? "✓" : ""}</span>Same as project<small>${esc(projText)}</small></button><hr>` : "")
+    + (values.length ? "" : `<div class="sb-note">${cfg.none}</div>`)
+    + values.map(v => `<button type="button" class="sb-item" role="menuitemcheckbox"
+        aria-checked="${names.includes(v)}" data-value="${esc(v)}">
+        <span class="tick">${names.includes(v) ? "✓" : ""}</span>${esc(cfg.single ? entryText(v, cfg) : v)}</button>${
+        cfg.conc && names.includes(v) ? concRow(v) : ""}`).join("")
+    + (pickerAdding
+      ? `<form class="sb-add-row" id="pickerAddForm"><input id="pickerAddName" maxlength="${cfg.max}" placeholder="${cfg.placeholder}" autocomplete="off"
+             ${cfg.single ? `type="number" step="any" inputmode="decimal" min="${cfg.lo}" max="${cfg.hi}"` : ""}>
+           <button type="submit" class="primary">Add</button></form><div class="err" id="pickerErr"></div>`
+      : `<button type="button" class="sb-item add" role="menuitem" id="pickerAddBtn">${cfg.add}</button>`);
+
+  const newEntry = v => (cfg.conc ? { name: v, ...lastConc(field, v) } : v);
+  pickerMenu.querySelectorAll("[data-value]").forEach(b => {
     b.onclick = () => {
-      const n = b.dataset.name;
-      p.collectedBy = chosen.includes(n) ? chosen.filter(x => x !== n) : [...chosen, n];
-      collectedChanged(p);
+      const v = b.dataset.value;
+      own();
+      // one value: picking it replaces the last, picking it again clears it
+      if (cfg.single) p[field] = names.includes(v) ? null : cleanEntries(v, cfg);
+      else p[field] = names.includes(v) ? current().filter(e => entryName(e) !== v) : [...current(), newEntry(v)];
+      pickerChanged(p);
     };
   });
-  const addBtn = document.getElementById("collectorAddBtn");
+  // typing an amount or picking a unit saves as it goes, without rebuilding the menu under the caret
+  pickerMenu.querySelectorAll("[data-amount]").forEach(inp => {
+    inp.oninput = () => {
+      own();
+      const e = entryOf(inp.dataset.amount), v = parseFloat(inp.value);
+      e.amount = Number.isFinite(v) && v >= 0 ? v : null;
+      rememberConc(field, e);
+      pickerSaved(p);
+    };
+  });
+  pickerMenu.querySelectorAll("[data-unit]").forEach(sel => {
+    sel.onchange = () => {
+      own();
+      const e = entryOf(sel.dataset.unit);
+      e.unit = sel.value;
+      rememberConc(field, e);
+      pickerSaved(p);
+    };
+  });
+  const same = pickerMenu.querySelector("[data-same]");
+  if (same) same.onclick = () => { delete p[field]; pickerChanged(p); };
+  const addBtn = document.getElementById("pickerAddBtn");
   if (addBtn) addBtn.onclick = () => {
-    collectorAdding = true; renderCollectorMenu();
-    document.getElementById("collectorAddName").focus();
+    pickerAdding = true; renderPicker();
+    document.getElementById("pickerAddName").focus();
   };
-  const form = document.getElementById("collectorAddForm");
+  const form = document.getElementById("pickerAddForm");
   if (form) form.onsubmit = e => {
     e.preventDefault();
-    const name = cleanNames([document.getElementById("collectorAddName").value])[0];
-    if (!name) return;
+    const typed = document.getElementById("pickerAddName").value;
+    if (cfg.single) {
+      const n = cleanEntries(typed, cfg);
+      if (n === null) { document.getElementById("pickerErr").textContent = `A number from ${cfg.lo} to ${cfg.hi}.`; return; }
+      try { localStorage.setItem(cfg.store, JSON.stringify(cleanNames([...knownValues(field), String(n)], cfg.max))); } catch (x) { /* this project still has it */ }
+      own();
+      p[field] = n;
+      pickerAdding = false;
+      pickerChanged(p);
+      return;
+    }
+    const v = cleanNames([typed], cfg.max)[0];
+    if (!v) return;
     // remembered on this station for the next project, and chosen for this one
-    try { localStorage.setItem(COLLECTORS_KEY, JSON.stringify(cleanNames([...knownCollectors(), name]))); } catch (x) { /* this project still has it */ }
-    const existing = knownCollectors().find(n => n.toLowerCase() === name.toLowerCase()) || name;
-    if (!(p.collectedBy || []).includes(existing)) p.collectedBy = [...(p.collectedBy || []), existing];
-    collectorAdding = false;
-    collectedChanged(p);
+    try { localStorage.setItem(cfg.store, JSON.stringify(cleanNames([...knownValues(field), v], cfg.max))); } catch (x) { /* this project still has it */ }
+    const existing = knownValues(field).find(n => n.toLowerCase() === v.toLowerCase()) || v;
+    own();
+    if (!current().some(e => entryName(e) === existing)) p[field] = [...current(), newEntry(existing)];
+    pickerAdding = false;
+    pickerChanged(p);
   };
 }
 
-function collectedChanged(p) {
+// saved, and the buttons show it: this one, and any group following the project
+function pickerSaved(obj) {
   save();
-  const btn = document.getElementById("collectedBtn");
-  if (btn) { btn.innerHTML = collectedLabel(p); btn.classList.toggle("empty", !p.collectedBy.length); }
-  renderCollectorMenu();
+  const field = pickerField;
+  const follow = obj === P() ? groupsOf(obj).filter(g => inheriting(g, field)) : [];
+  for (const o of [obj, ...follow]) {
+    const btn = pickerBtn(field, o);
+    if (btn) { btn.innerHTML = pickerLabel(o, field); btn.className = pickerBtnClass(o, field); }
+  }
 }
 
-function openCollectorMenu() {
-  if (!collectorMenu.hidden) return closeCollectorMenu();
-  const btn = document.getElementById("collectedBtn");
-  collectorAdding = false;
-  renderCollectorMenu();
-  collectorMenu.hidden = false;
-  const r = btn.getBoundingClientRect(), w = collectorMenu.offsetWidth;
-  collectorMenu.style.top = `${Math.round(r.bottom + 6)}px`;
-  collectorMenu.style.left = `${Math.round(Math.min(Math.max(10, r.left), innerWidth - w - 10))}px`;
+function pickerChanged(p) {
+  pickerSaved(p);
+  renderPicker();
+  // a substance just ticked with no remembered amount: straight to its amount box
+  const empty = [...pickerMenu.querySelectorAll("[data-amount]")].find(i => !i.value);
+  if (empty && !document.documentElement.classList.contains("touch")) empty.focus();
+}
+
+function openPicker(field, obj = P()) {
+  const btn = pickerBtn(field, obj);
+  if (!pickerMenu.hidden && pickerField === field && pickerTarget === obj) return closePicker();
+  closePicker();
+  pickerField = field;
+  pickerTarget = obj;
+  pickerAdding = false;
+  renderPicker();
+  pickerMenu.hidden = false;
+  const r = btn.getBoundingClientRect(), w = pickerMenu.offsetWidth;
+  pickerMenu.style.top = `${Math.round(r.bottom + 6)}px`;
+  pickerMenu.style.left = `${Math.round(Math.min(Math.max(10, r.left), innerWidth - w - 10))}px`;
   btn.setAttribute("aria-expanded", "true");
 }
-function closeCollectorMenu() {
+function closePicker() {
   // by id, not the const: openProject can run before this part of the script has
-  document.getElementById("collectorMenu").hidden = true;
-  const btn = document.getElementById("collectedBtn");
-  if (btn) btn.setAttribute("aria-expanded", "false");
+  document.getElementById("pickerMenu").hidden = true;
+  metaEl.querySelectorAll("[data-picker]").forEach(b => b.setAttribute("aria-expanded", "false"));
 }
 document.addEventListener("pointerdown", e => {
-  const btn = document.getElementById("collectedBtn");
-  if (!collectorMenu.hidden && !collectorMenu.contains(e.target) && !(btn && btn.contains(e.target))) closeCollectorMenu();
+  if (!pickerMenu.hidden && !pickerMenu.contains(e.target) && !e.target.closest("[data-picker]")) closePicker();
 });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && !collectorMenu.hidden) closeCollectorMenu(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !pickerMenu.hidden) closePicker(); });
 // the page scrolling under it would leave it pointing at the wrong place
-addEventListener("scroll", () => { if (!collectorMenu.hidden) closeCollectorMenu(); }, { passive: true });
-addEventListener("resize", () => { if (!collectorMenu.hidden) closeCollectorMenu(); });
+addEventListener("scroll", () => { if (!pickerMenu.hidden) closePicker(); }, { passive: true });
+addEventListener("resize", () => { if (!pickerMenu.hidden) closePicker(); });
 
 function openProject(id) {
   cmpZoom = null;
-  closeCollectorMenu();
+  closePicker();
   openId = id;
   view = "cards";
   metaShown = null;
@@ -3958,7 +4172,9 @@ function metadataReport(p) {
   if (p.createdAt) L.push(`Project created  ${fmtDate(p.createdAt)}`);
   // "when was this experiment performed" is the readings, not the project record
   L.push(`Experiment run   ${win ? fmtWindow(win) : "no readings recorded"}`);
-  L.push(`Collected by     ${(p.collectedBy || []).length ? p.collectedBy.join(", ") : "not recorded"}`);
+  for (const f of pickerFields())
+    L.push(`${f.label.padEnd(16)} ${listOf(p, f).length
+      ? listOf(p, f).map(e => entryText(e, f, true)).join(f.sep + " ") : "not recorded"}`);
   L.push(`Cultures         ${cs.length}` + (groups.length
     ? ` in ${groups.length} replicate group${groups.length === 1 ? "" : "s"}` : ""));
   L.push(`Readings         ${readings}`);
@@ -3988,6 +4204,10 @@ function metadataReport(p) {
           : `mu ${st.mean.toFixed(4)} +/- ${st.sd.toFixed(4)} /h (n = ${st.n} fitted)`}`);
       if (st && st.mean > 0)
         L.push(`  Mean doubling     ${fmtDuration(Math.LN2 / st.mean)} (from the mean rate)`);
+      // only what the group changed is its own; the rest reads "same as project"
+      for (const f of groupFields())
+        L.push(`  ${f.label.padEnd(17)} ${!hasOwn(g, f.field) ? "same as project"
+          : listOf(g, f).length ? listOf(g, f).map(e => entryText(e, f, true)).join(f.sep + " ") : "not recorded"}`);
       L.push("  Group notes");
       L.push(noteBlock(g.notes, 4));
       L.push("");
@@ -4270,9 +4490,23 @@ function parseCSV(text) {
    layout metadataReport writes — a section is a heading between two rules,
    project notes are indented two spaces and group notes four, and a note ends
    at the first truly empty line (a blank line inside a note is padded). */
+/* One list's text in the report, back to what it stores: "Glucose @ 0.4 % (w/v);
+   Acetate", "37 °C", "not recorded". */
+function parseListText(text, f) {
+  const v = String(text).trim();
+  const parts = v === "not recorded" ? [] : v.split(f.sep).map(x => x.trim()).filter(Boolean);
+  if (f.single) return cleanEntries(parts[0] ?? null, f);
+  return cleanEntries(!f.conc ? parts : parts.map(x => {
+    const m = x.match(/^(.*?)\s+@\s+([0-9.eE+-]+)\s+(.+)$/);
+    return m ? { name: m[1], amount: parseFloat(m[2]), unit: m[3].trim() } : { name: x };
+  }), f);
+}
+
 function parseMetadataReport(text) {
   const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
-  const out = { name: "", createdAt: null, notes: "", collectedBy: [], groupNotes: new Map() };
+  const out = { name: "", createdAt: null, notes: "", groupNotes: new Map(), groupLists: new Map() };
+  const lists = pickerFields().map(f => ({ ...f, re: new RegExp(`^${f.label} {2,}(.+)$`) }));
+  for (const f of lists) out[f.field] = f.single ? null : [];
   const takeNote = (from, indent) => {
     const pad = " ".repeat(indent);
     const got = [];
@@ -4287,9 +4521,11 @@ function parseMetadataReport(text) {
     const line = lines[i];
     let m;
     if (lines[i - 1] === RULE2 && lines[i + 1] === RULE2) { section = line; i++; continue; }
-    if ((m = line.match(/^Project {2,}(.+)$/))) out.name = m[1].trim();
-    else if ((m = line.match(/^Collected by {2,}(.+)$/)))
-      out.collectedBy = m[1].trim() === "not recorded" ? [] : cleanNames(m[1].split(","));
+    const list = lists.find(f => f.re.test(line));
+    if (list) {
+      out[list.field] = parseListText(line.match(list.re)[1], list);
+    }
+    else if ((m = line.match(/^Project {2,}(.+)$/))) out.name = m[1].trim();
     else if ((m = line.match(/^Project created {2,}(.+)$/))) {
       const t = Date.parse(m[1].trim());
       if (Number.isFinite(t)) out.createdAt = t;
@@ -4298,9 +4534,16 @@ function parseMetadataReport(text) {
     } else if (section === "REPLICATE GROUPS" && (m = line.match(/^(.+?) {2}\(\d+ replicates?\)$/))) {
       const g = m[1];
       // the group's notes are the four-space block under "  Group notes"
+      const own = {};
       for (let j = i + 1; j < lines.length && lines[j] !== ""; j++) {
         if (lines[j] === "  Group notes") { out.groupNotes.set(g, takeNote(j + 1, 4).text); break; }
+        // "  Strain            MG1655"; "same as project" leaves the group following
+        for (const f of groupFields()) {
+          const gm = lines[j].match(new RegExp(`^  ${f.label} {2,}(.+)$`));
+          if (gm && gm[1].trim() !== "same as project") own[f.field] = parseListText(gm[1], f);
+        }
       }
+      out.groupLists.set(g, own);
     }
   }
   return out;
@@ -4320,7 +4563,8 @@ function projectFromCSV(text, meta, fallbackName) {
   const num  = (r, name) => { const v = parseFloat(cell(r, name)); return Number.isFinite(v) ? v : null; };
 
   const p = { id: uid(), name: meta.name || fallbackName, createdAt: meta.createdAt || Date.now(),
-              notes: meta.notes || "", collectedBy: meta.collectedBy || [], cultures: [], groups: [] };
+              notes: meta.notes || "", cultures: [], groups: [] };
+  for (const f of pickerFields()) p[f.field] = cleanEntries(meta[f.field], f);
   const byName = new Map();   // culture name -> culture
   const groups = new Map();   // group name -> group
 
@@ -4337,7 +4581,10 @@ function projectFromCSV(text, meta, fallbackName) {
       const gname = cell(r, "replicate_group").trim();
       if (gname) {
         let g = groups.get(gname);
-        if (!g) { g = { id: uid(), name: gname, notes: meta.groupNotes.get(gname) || "" }; groups.set(gname, g); p.groups.push(g); }
+        if (!g) {
+          g = { id: uid(), name: gname, notes: meta.groupNotes.get(gname) || "", ...(meta.groupLists.get(gname) || {}) };
+          groups.set(gname, g); p.groups.push(g);
+        }
         c.groupId = g.id;
         const no = parseInt(cell(r, "replicate_no"), 10);
         c.repNo = Number.isInteger(no) ? no : null;
@@ -4393,7 +4640,7 @@ function projectFromJSON(text) {
   if (typeof p.name !== "string" || !p.name.trim()) throw new Error("The project file has no project name.");
   if (!Array.isArray(p.cultures)) p.cultures = [];
   if (typeof p.notes !== "string") p.notes = "";
-  p.collectedBy = cleanNames(p.collectedBy);
+  for (const f of pickerFields()) p[f.field] = cleanEntries(p[f.field], f);
   if (!Number.isFinite(p.createdAt)) p.createdAt = Date.now();
   for (const c of p.cultures) {
     if (!c || typeof c !== "object") throw new Error("The project file has a broken culture record.");
