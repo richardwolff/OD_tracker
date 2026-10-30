@@ -7,6 +7,25 @@ per-culture stopwatch, fit a growth rate, and export the run as a zipped project
 machine, or after the browser's storage was cleared. Zips exported before the
 JSON record existed are rebuilt from their CSV and metadata report.
 
+## Raspberry Pi station
+
+On the Pi, from this folder:
+
+```sh
+bash raspberry-pi-setup.sh            # an OD Tracker icon in the menu and on the desktop
+bash raspberry-pi-setup.sh --kiosk    # or: full-screen at every boot, for a dedicated screen
+```
+
+The default adds **OD Tracker** to the applications menu and the desktop. It
+opens in a maximised window with the touch layout and closes with the window's
+close button; nothing starts at boot. `--kiosk` instead opens it full-screen,
+with no way out but a keyboard (Alt+F4), at every boot. Running the default over
+an earlier kiosk install turns it back into an icon. Either way it copies the
+app to `~/od-tracker`, can name the station on the Station Board (below), asks
+once for sudo to let it use the bench camera without asking every time, and
+keeps the screen from blanking. `bash raspberry-pi-setup.sh --uninstall` removes
+the icons, the start-at-boot entry and the camera permission; your data stays.
+
 ## Desktop launchers
 
 Puts **OD Tracker** and **Send CSV by Email** in the applications menu and on
@@ -81,8 +100,16 @@ a camera read, as long as the saved number keeps the screen's three decimals
 looks that disagree (a number still settling), are flagged in red. Nothing
 leaves the station: no network, no extra software.
 
-On a Pi, `raspberry-pi-setup.sh` starts the kiosk with camera access allowed
-(there is nobody to click the browser's prompt). In the Mac app, macOS asks once.
+On a Pi, `raspberry-pi-setup.sh` sets two things up for the camera. A Chromium
+policy (`/etc/chromium/policies/managed/od-tracker.json`, written with sudo) lets
+OD Tracker use the camera without asking at every reading: a page opened from a
+file can't have the permission remembered otherwise. `chrome://policy` shows
+whether it's in force. And its launcher switches off Chromium's PipeWire camera
+route: through PipeWire, Raspberry Pi OS's Chromium often can't see a USB webcam
+at all, and the picture just stays black. That only applies when the launcher
+starts Chromium, so if OD Tracker is opened while another Chromium window is
+already up, set "WebRTC PipeWire camera support" to Disabled in `chrome://flags`
+as well. In the Mac app, macOS asks once.
 
 ## Station Board
 
@@ -184,5 +211,5 @@ settings on that machine. The stations keep using the lab address.
 Log-ons left running are cleared after 12 hours (`--expire-hours`), and
 answered messages are kept for a week as chat history. The roster, log-ons and
 messages live in `station_board/board-state.json` on the host. On a
-station the address and key passed by the kiosk launcher win at every boot, so
-to change them, re-run `raspberry-pi-setup.sh`.
+station the address and key passed by the launcher win each time it opens OD
+Tracker, so to change them, re-run `raspberry-pi-setup.sh`.

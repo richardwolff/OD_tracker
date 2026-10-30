@@ -3172,14 +3172,27 @@ async function openCamSetup() {
   document.getElementById("camErr").textContent = "";
   camRotate.checked = camDraft.rotate;
   camDlg.showModal();
+  // a camera that never starts gives no error at all, just a black picture:
+  // after a few seconds, say so, and how many cameras the browser can see
+  const stuck = setTimeout(async () => {
+    if (camStream || !camDlg.open) return;
+    let n = "?";
+    try { n = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput").length; } catch (e) { /* unknown */ }
+    document.getElementById("camErr").textContent = n === 0
+      ? "Still waiting: the browser can't see any camera. On a Raspberry Pi, Chromium's “WebRTC PipeWire camera support” (chrome://flags) must be off; raspberry-pi-setup.sh does this."
+      : `Still waiting for the camera (the browser sees ${n}). Is a permission prompt waiting to be allowed?`;
+  }, 5000);
   try {
     await startCamera(camDraft.deviceId);
+    clearTimeout(stuck);
+    document.getElementById("camErr").textContent = "";
     // names are only given once the camera has been allowed
     const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
     const current = camStream.getVideoTracks()[0].getSettings().deviceId;
     camSelect.innerHTML = devs.map(d => `<option value="${esc(d.deviceId)}"${d.deviceId === current ? " selected" : ""}>${esc(d.label || "Camera")}</option>`).join("");
     camDraft.deviceId = current;
   } catch (err) {
+    clearTimeout(stuck);
     document.getElementById("camErr").textContent = camMessage(err);
     return;
   }
