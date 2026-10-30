@@ -443,6 +443,12 @@ svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
 }
 #cmpChart + .tooltip + .zoom-out { left: 7%; }
 .zeroline { stroke: var(--axis); stroke-width: 1.2; }
+.zeroline.t0 { stroke-dasharray: 4 3; }
+.align-ctl { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
+.align-ctl input { width: 74px; font: inherit; font-size: 13.5px; padding: 4px 7px; border-radius: 7px;
+                   border: 1px solid var(--border); background: var(--page); color: var(--text-primary); }
+.align-ctl input:focus { outline: none; border-color: var(--series-1); }
+html.touch .align-ctl input { font-size: 15px; padding: 7px 9px; width: 84px; }
 html.touch .zoom-out { min-height: 34px; padding: 6px 12px; font-size: 13px; }
 .tooltip {
   position: absolute; pointer-events: none; z-index: 5;
@@ -970,6 +976,8 @@ html.touch .sb-msg-actions button { min-height: 42px; }
               title="One line per culture, or one per replicate group"><span id="cmpModeLabel">All cultures</span> <span class="caret">▾</span></button></h2>
           <p class="cmp-sub" id="cmpSub"></p>
         </div>
+        <label class="align-ctl" id="alignCtl" hidden title="The OD each curve is lined up at: its t = 0">Aligned at OD
+          <input type="number" id="alignOD" step="any" min="0.001" max="10" value="0.05" inputmode="decimal"></label>
         <button id="cmpFitBtn" class="ghost toggle-btn" aria-pressed="false"
                 title="Draw the readings behind each growth rate heavier, and fade the ones dropped from the fit">Highlight fitted</button>
       </div>
@@ -2354,6 +2362,13 @@ document.addEventListener("pointerdown", e => {
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !cmpModeMenu.hidden) closeCmpModeMenu(); });
 addEventListener("resize", () => { if (!cmpModeMenu.hidden) closeCmpModeMenu(); });
+
+// the OD the "Aligned" axis lines curves up at; a new one means new t = 0s, so the zoom goes
+document.getElementById("alignOD").addEventListener("change", e => {
+  const v = parseFloat(e.target.value);
+  if (Number.isFinite(v) && v > 0 && v <= 10) { cmpAlignOD = v; cmpZoom = null; drawOverlay(); }
+  else e.target.value = fmtAlignOD(cmpAlignOD);
+});
 
 document.getElementById("cmpFitBtn").onclick = e => {
   highlightFit = !highlightFit;
@@ -3957,11 +3972,44 @@ const PLOTS = {
     tick: v => String(+v.toFixed(2)),
     tip:  v => `μ ${v.toFixed(2)} h⁻¹`
   },
+  lfc: {
+    key: "lfc", log: false,
+    // aligned: from the OD the curves are lined up at; otherwise from each
+    // culture's own first reading that counts towards its fit
+    get label() { return cmpX === "aligned" ? `log₂ fold change from OD ${fmtAlignOD(cmpAlignOD)}` : "log₂ fold change from first fit point"; },
+    valueOf: (m, c) => {
+      const ref = cmpX === "aligned" ? cmpAlignOD : lfcAnchor(c)?.od;
+      return m.od > 0 && ref > 0 ? Math.log2(m.od / ref) : null;
+    },
+    tick: v => String(+v.toFixed(2)),
+    tip:  v => `log₂FC ${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}`
+  },
   t: {
     key: "t", label: "Elapsed time (h)", log: false,
     valueOf: m => m.t / 3.6e6,
     tick: v => String(+v.toFixed(2)),
     tip:  v => `${v.toFixed(2)} h`
+  },
+  /* Time since this culture reached a chosen OD (cmpAlignOD), so curves started
+     at different densities or after different lags line up at t = 0. Each
+     culture's moment comes from its fitted growth line, ln OD = a + μt, solved
+     for the chosen OD (alignOffsets, worked out per draw). A culture with no
+     fit has no moment, and drops out. Only ever an x on the compare chart. */
+  aligned: {
+    key: "aligned", log: false,
+    get label() { return `Time since OD ${fmtAlignOD(cmpAlignOD)} (h)`; },
+    valueOf: (m, c) => (c && alignOffsets.has(c.id) ? m.t / 3.6e6 - alignOffsets.get(c.id) : null),
+    tick: v => String(+v.toFixed(2)),
+    tip:  v => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)} h from OD ${fmtAlignOD(cmpAlignOD)}`
+  },
+  // time under a fold change: each culture's clock restarts at the reading its
+  // fold change counts from
+  tfit: {
+    key: "tfit", log: false,
+    label: "Time since first fit OD timepoint (h)",
+    valueOf: (m, c) => { const a = c && lfcAnchor(c); return a ? (m.t - a.t) / 3.6e6 : null; },
+    tick: v => String(+v.toFixed(2)),
+    tip:  v => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)} h from first fit point`
   }
 };
 
@@ -3971,6 +4019,12 @@ const PLOTS = {
    opens on the growth curve the app was built to show. */
 let cmpY = "od";
 let cmpX = "t";
+/* The OD the "Aligned" x-axis lines the curves up at, and each culture's
+   estimated time of reaching it (hours on its own stopwatch). Not persisted,
+   like the axes. */
+let cmpAlignOD = 0.05;
+let alignOffsets = new Map();
+const fmtAlignOD = v => String(+v.toPrecision(3));
 
 const hasPh    = c => c.measurements.some(m => Number.isFinite(m.ph));
 const anyPh    = () => cultures().some(hasPh);
@@ -3983,8 +4037,15 @@ const plotFor  = c => (c.plot === "ph" && hasPh(c) ? PLOTS.ph : PLOTS.od);
    along the bottom the line still traces the culture's path through time. */
 const seriesOf = (c, PY, PX = PLOTS.t) => c.measurements
   .slice().sort((a, b) => a.t - b.t)
-  .map(m => ({ x: PX.valueOf(m), y: PY.valueOf(m), use: m.use !== false }))
+  .map(m => ({ x: PX.valueOf(m, c), y: PY.valueOf(m, c), use: m.use !== false, id: m.id }))
   .filter(p => p.x !== null && p.y !== null);
+
+/* The OD a culture's fold change counts from outside aligned mode: its earliest
+   reading ticked for the fit, or simply its earliest if none is ticked. */
+function lfcAnchor(c) {
+  const ms = c.measurements.filter(m => m.od > 0).sort((a, b) => a.t - b.t);
+  return ms.find(m => m.use !== false) || ms[0] || null;
+}
 
 /* The y-axis for one set of values, padded so the extremes are not sitting on
    the frame. `Y` maps a value to a pixel; `ticks` are the values to label.
@@ -4065,7 +4126,7 @@ let cmpZoom = null;
    `touch-action: pan-y` on the hit box leaves vertical swipes to the page, so
    a finger can still scroll past a card — the browser cancels the pointer
    when it takes the gesture, and the half-drawn brush goes with it. */
-function wireChartPointer(svg, { W, H, left, right, inv, onHover, onLeave, onZoom }) {
+function wireChartPointer(svg, { W, H, left, right, inv, onHover, onLeave, onZoom, onTap }) {
   const hit   = svg.querySelector("[data-hit]");
   const brush = svg.querySelector("[data-brush]");
   let drag = null;                     // { x0, moved } while a drag is in progress
@@ -4097,7 +4158,7 @@ function wireChartPointer(svg, { W, H, left, right, inv, onHover, onLeave, onZoo
     if (!drag) return;
     const d = drag; drag = null;
     hideBrush();
-    if (!d.moved) return;
+    if (!d.moved) { if (onTap) { const p = toView(ev); onTap(p.x, p.y); } return; }
     const x = clampX(toView(ev).x);
     if (Math.abs(x - d.x0) < 6) return;                      // too thin to have meant it
     const a = inv(Math.min(d.x0, x)), b = inv(Math.max(d.x0, x));
@@ -4138,6 +4199,10 @@ function setCmpY(key) {
   if (cmpY === key) return;
   // growth rate is never an x, so from it the x-axis goes back to time
   if (cmpX === key) cmpX = cmpY === "mu" ? "t" : cmpY;
+  // fold change against OD is just OD again, so time takes the x-axis
+  if (key === "lfc" && cmpX === "od") cmpX = "t";
+  // time shifts to each culture's first fit point and back, so hours zoomed to go stale
+  if ((key === "lfc" || cmpY === "lfc") && cmpX === "t") cmpZoom = null;
   cmpY = key;
   drawOverlay();
 }
@@ -4167,12 +4232,15 @@ const ySwitchHTML = active => `<div class="viewsw plot-sw" role="tablist" aria-l
     <button type="button" role="tab" data-plot="od" aria-selected="${active === "od"}">OD₆₀₀</button>
     ${anyPh() ? `<button type="button" role="tab" data-plot="ph" aria-selected="${active === "ph"}">pH</button>` : ""}
     <button type="button" role="tab" data-plot="mu" aria-selected="${active === "mu"}">Growth rate</button>
+    <button type="button" role="tab" data-plot="lfc" aria-selected="${active === "lfc"}">log₂ fold change</button>
   </div>`;
 
 /* The x-axis's own switch. */
 const xSwitchHTML = active => `<div class="viewsw plot-sw" role="tablist" aria-label="Value along the x-axis">
     <button type="button" role="tab" data-x="t"  aria-selected="${active === "t"}">Time</button>
-    <button type="button" role="tab" data-x="od" aria-selected="${active === "od"}">OD₆₀₀</button>
+    <button type="button" role="tab" data-x="aligned" aria-selected="${active === "aligned"}"
+            title="Time since each culture reached one OD, from its fitted growth line">Aligned</button>
+    ${cmpY === "lfc" ? "" : `<button type="button" role="tab" data-x="od" aria-selected="${active === "od"}">OD₆₀₀</button>`}
     ${anyPh() ? `<button type="button" role="tab" data-x="ph" aria-selected="${active === "ph"}">pH</button>` : ""}
   </div>`;
 
@@ -4313,9 +4381,29 @@ function drawChart(svg, tip, c, fit) {
   };
   wireZoomOut(svg, !!zoom, () => setZoom(null));
 
+  // the reading under a pointer, if one is within a fingertip of it (in screen px)
+  const pointAt = (xv, yv) => {
+    const box = svg.getBoundingClientRect(), sx = box.width / W, sy = box.height / H;
+    let near = null, best = 14;
+    for (const p of inView) {
+      const dist = Math.hypot((X(p.x) - xv) * sx, (Y(p.y) - yv) * sy);
+      if (dist < best) { best = dist; near = p; }
+    }
+    return near;
+  };
+
   wireChartPointer(svg, {
     W, H, left: pad.l, right: W - pad.r, inv: xInv, onZoom: setZoom,
-    onHover(xv) {
+    // tapping a point ticks it into the fit or out of it, like its Fit box
+    onTap(xv, yv) {
+      const p = pointAt(xv, yv);
+      const m = p && c.measurements.find(x => x.id === p.id);
+      if (!m) return;
+      m.use = m.use === false;
+      save(); renderCard(c.id);
+    },
+    onHover(xv, yv) {
+      svg.querySelector("[data-hit]").style.cursor = pointAt(xv, yv) ? "pointer" : "";
       const box = svg.getBoundingClientRect();
       let near = null, best = Infinity;
       for (const p of inView) {
@@ -4327,7 +4415,8 @@ function drawChart(svg, tip, c, fit) {
       cross.setAttribute("opacity", "1");
       tip.innerHTML = `<span class="tt-od">${P.tip(near.y)}</span>
                        <span class="tt-t"> · ${near.x.toFixed(2)} h</span>
-                       ${near.use ? "" : '<span class="tt-t"> · excluded</span>'}`;
+                       ${near.use ? "" : '<span class="tt-t"> · excluded</span>'}
+                       <span class="tt-t"> · tap to ${near.use ? "exclude from" : "include in"} fit</span>`;
       tip.style.left = `${(X(near.x) / W) * box.width}px`;
       tip.style.top  = `${(Y(near.y) / H) * box.height - 10}px`;
       tip.style.opacity = "1";
@@ -4371,13 +4460,22 @@ function drawOverlay() {
   const hint   = document.getElementById("cmpHint");
 
   // a culture can be drawn as soon as it has 2+ points carrying both values
-  const P  = cmpY === "mu" ? PLOTS.mu : cmpY === "ph" && anyPh() ? PLOTS.ph : PLOTS.od;
-  const rate = P.key === "mu";
+  const P  = cmpY === "mu" ? PLOTS.mu : cmpY === "ph" && anyPh() ? PLOTS.ph
+           : cmpY === "lfc" ? PLOTS.lfc : PLOTS.od;
+  const rate = P.key === "mu", lfc = P.key === "lfc";
   // x can leave time once there is something else to put there: OD against pH
   // (or pH against OD) needs a pH, a growth rate against OD needs nothing more
-  const xOk = cmpX === "od" ? anyPh() || rate : cmpX === "ph" && anyPh();
-  const PX = xOk ? PLOTS[cmpX] : PLOTS.t;
-  const timeX = PX.key === "t";
+  const xOk = cmpX === "aligned" || (cmpX === "od" ? anyPh() || rate : cmpX === "ph" && anyPh());
+  // each culture's moment of reaching the chosen OD, from its fitted line
+  alignOffsets = new Map();
+  for (const c of cultures()) {
+    const f = fitGrowth(c);
+    if (f.ok && f.mu > 0) alignOffsets.set(c.id, (Math.log(cmpAlignOD) - f.intercept) / f.mu);
+  }
+  let PX = xOk ? PLOTS[cmpX] : PLOTS.t;
+  if (lfc && PX.key === "t") PX = PLOTS.tfit;
+  const timeX = PX.key === "t", aligned = PX.key === "aligned", fitZero = PX.key === "tfit";
+  document.getElementById("alignCtl").hidden = !aligned;
   const all = cultures().map(c => ({ c, fit: fitGrowth(c), pts: rate ? rateSeriesOf(c, PX) : seriesOf(c, P, PX) }));
   // a growth rate is a point of its own, three readings in; a curve needs two
   const drawable = all.filter(s => s.pts.length >= (rate ? 1 : 2));
@@ -4412,7 +4510,15 @@ function drawOverlay() {
   hint.textContent = [
     "Tap a culture in the legend to hide or show it.",
     "Drag across the chart to zoom in; double-tap it or use Show all to zoom back out.",
-    thin ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs ${rate ? 3 : 2}+ ${needs}readings).` : "",
+    thin && !aligned ? `${thin} culture${thin > 1 ? "s" : ""} not plotted yet (needs ${rate ? 3 : 2}+ ${needs}readings).` : "",
+    aligned ? (() => {
+      const off = cultures().filter(c => !alignOffsets.has(c.id)).length;
+      return `Each curve's t = 0 is when its fitted growth line reaches OD ${fmtAlignOD(cmpAlignOD)} (extrapolated if that OD lies outside the fitted points).`
+        + (off ? ` ${off} culture${off > 1 ? "s have" : " has"} no growth-rate fit yet, so can't be aligned and ${off > 1 ? "aren't" : "isn't"} shown.` : "");
+    })() : "",
+    lfc ? (aligned
+      ? `log₂ fold change is log₂(OD / ${fmtAlignOD(cmpAlignOD)}): each step of 1 is a doubling, and every fitted line passes through 0 at t = 0.`
+      : `log₂ fold change is log₂ of OD over each culture's first reading ticked for the fit: each step of 1 is a doubling.${fitZero ? " Time is counted from that reading, so every curve starts its fit at (0, 0)." : ""}`) : "",
     rate ? "Growth rate at each reading is the slope of ln OD between the readings either side of it, so the first and last readings have none." : "",
     means ? `Replicates are averaged reading by reading (all the first readings together, then the second…), with bars at ±1 SD${P.log ? "; on OD's log axis the mean is geometric" : ""}. Hide a culture in the legend to leave it out.` : ""
   ].filter(Boolean).join(" ");
@@ -4432,9 +4538,8 @@ function drawOverlay() {
   svg.style.aspectRatio = `${W} / ${H}`;
   svg.classList.toggle("hl-fit", highlightFit);
 
-  // the x title becomes a control once there is something to switch to — a pH,
-  // or a growth rate to set against OD; the y one always is
-  const pick = anyPh() || rate;
+  // both titles are controls: x can always switch to "Aligned", and y to growth rate
+  const pick = true;      // "Aligned" is always on offer
 
   const xs = plotted.flatMap(s => s.pts.map(p => p.x));
   // time runs from inoculation, so that axis is anchored at zero; a measured
@@ -4450,7 +4555,7 @@ function drawOverlay() {
   const ys = plotted.flatMap(s => inView(s).flatMap(yOf));
   const yVals = ys.length ? ys : plotted.flatMap(s => s.pts.flatMap(yOf));
   // a growth rate always takes in zero: whether it is growing at all is the first read
-  const { Y, ticks: yTicks } = yAxis(rate ? yVals.concat(0) : yVals, P, pad.t, H - pad.b);
+  const { Y, ticks: yTicks } = yAxis(rate || lfc ? yVals.concat(0) : yVals, P, pad.t, H - pad.b);
 
   let g = plotBoxHTML("cmp", W, H, pad);
   for (const v of yTicks) {
@@ -4466,7 +4571,8 @@ function drawOverlay() {
   }
   g += `<line class="axisline" x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${H - pad.b}"/>
         <line class="axisline" x1="${pad.l}" y1="${H - pad.b}" x2="${W - pad.r}" y2="${H - pad.b}"/>
-        ${rate ? `<line class="zeroline" x1="${pad.l}" y1="${Y(0).toFixed(1)}" x2="${W - pad.r}" y2="${Y(0).toFixed(1)}"/>` : ""}
+        ${rate || lfc ? `<line class="zeroline" x1="${pad.l}" y1="${Y(0).toFixed(1)}" x2="${W - pad.r}" y2="${Y(0).toFixed(1)}"/>` : ""}
+        ${(aligned || fitZero) && xLo < 0 && xHi > 0 ? `<line class="zeroline t0" x1="${X(0).toFixed(1)}" y1="${pad.t}" x2="${X(0).toFixed(1)}" y2="${H - pad.b}"/>` : ""}
         ${axisTitleHTML("x", PX.label, `translate(${(pad.l + W - pad.r) / 2}, ${H - 5})`, pick)}
         ${axisTitleHTML("y", P.label,  `rotate(-90) translate(${-(pad.t + H - pad.b) / 2}, 13)`, true)}`;
 
@@ -4635,7 +4741,7 @@ function rateSeriesOf(c, PX) {
   for (let i = 1; i < ms.length - 1; i++) {
     const a = ms[i - 1], m = ms[i], b = ms[i + 1];
     const dt = (b.t - a.t) / 3.6e6;
-    const x = PX.valueOf(m);
+    const x = PX.valueOf(m, c);
     if (!(dt > 0) || x === null) continue;
     out.push({ x, y: (Math.log(b.od) - Math.log(a.od)) / dt, use: [a, m, b].every(r => r.use !== false) });
   }
