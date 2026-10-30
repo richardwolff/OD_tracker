@@ -159,6 +159,7 @@ exec $CHROMIUM \\
   --kiosk \\
   --start-fullscreen \\
   --touch-events=enabled \\
+  --use-fake-ui-for-media-stream \\
   --noerrdialogs \\
   --disable-infobars \\
   --disable-session-crashed-bubble \\
@@ -173,6 +174,9 @@ EOF
 chmod 700 "$LAUNCHER"   # it can carry the board key
 info "wrote $LAUNCHER"
 
+# --use-fake-ui-for-media-stream answers the camera prompt with "allow", so
+# Record OD's "Read from spectrophotometer" can use the bench camera: there is
+# no one at a kiosk to click the prompt, and the page is a local file.
 # NOTE: deliberately NOT using --incognito or --guest. Those discard
 # localStorage on exit, which would erase every culture at reboot.
 

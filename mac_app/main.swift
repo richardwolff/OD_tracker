@@ -84,6 +84,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate,
         decisionHandler(.allow, preferences)
     }
 
+    // Record OD's "Read from spectrophotometer" asks for the camera: the page is
+    // our own, so allow it (macOS then asks the person once, using the reason in
+    // Info.plist). Anything else — a microphone, say — is refused.
+    @available(macOS 12.0, *)
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        decisionHandler(type == .camera ? .grant : .deny)
+    }
+
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         download.delegate = self
     }

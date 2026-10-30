@@ -62,6 +62,28 @@ editing the page. Cultures recorded in the app live in
 projects as zips to back them up, and use **Import project** to bring in runs
 exported from a browser or the Pi. Uninstalling leaves that data in place.
 
+## Reading the OD off the spectrophotometer
+
+A USB webcam clamped in front of the GENESYS 30's screen (an EMEET C960 here,
+30–40 cm away) lets Record OD read the number itself: tap **📷 Read from
+spectrophotometer** and the OD box fills in, with a small picture of the screen
+beside it to check before you tap Record.
+
+Set it up once per station from the ⚙ beside that button: pick the camera, tick
+**Picture upside down** if it hangs that way, and drag a box around the line
+that reads **Value = …**. The setup screen shows what it reads as you go. If the
+camera gets moved, draw the box again.
+
+It reads the fixed d.ddd format by comparing each digit with examples of that
+digit, built in from this instrument and added to by every reading saved after
+a camera read, as long as the saved number keeps the screen's three decimals
+(type 0.430, not 0.43, when correcting). A digit it isn't sure of, or three quick
+looks that disagree (a number still settling), are flagged in red. Nothing
+leaves the station: no network, no extra software.
+
+On a Pi, `raspberry-pi-setup.sh` starts the kiosk with camera access allowed
+(there is nobody to click the browser's prompt). In the Mac app, macOS asks once.
+
 ## Station Board
 
 Lets people mark which stations they are at, see who is at every other

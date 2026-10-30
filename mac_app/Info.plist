@@ -26,6 +26,8 @@
 	<string>public.app-category.education</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.3</string>
+	<key>NSCameraUsageDescription</key>
+	<string>OD Tracker reads the OD off the spectrophotometer's screen with the bench camera.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
