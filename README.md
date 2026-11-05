@@ -120,13 +120,15 @@ and records OD with your hands free:
 - **Middle** opens Record OD on that culture and reads the camera. Check the
   number against the screen and press **middle** again to save it. A read that
   failed or was flagged in red is read again rather than saved; correct it by
-  hand and the next press saves your number.
+  hand and the next press saves your number. **Left** cancels the reading
+  without saving it (it leaves an edit of an old reading alone).
 
-Set it up once per station with **🦶** in the header: press left, middle and right
+Set it up once per station with the foot button in the header: press left, middle and right
 when asked, then Save. The pedal is a keyboard to the computer, so the app just
 learns the keys it sends and needs no driver. Pedals that send letters do nothing
 (or type that letter) while the cursor is in a text box such as a culture's name;
-tap elsewhere first. Save with nothing learned to turn the pedal off.
+tap elsewhere first. The foot button shows blue while the pedal is on; Clear, then
+Save with nothing learned, turns it off.
 
 ## Station Board
 

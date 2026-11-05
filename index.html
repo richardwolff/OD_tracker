@@ -162,6 +162,8 @@ main { padding: 20px; max-width: 1500px; margin: 0 auto; }
      narrow, and the @container rules at the end of this sheet compact it */
   container-type: inline-size;
 }
+/* the foot pedal is set up at this station */
+#pedalBtn.on { color: var(--series-1); background: color-mix(in srgb, var(--series-1) 16%, transparent); }
 /* the culture the foot pedal is on */
 .card.current { outline: 3px solid var(--series-1); outline-offset: 1px; }
 .card-head { padding: 14px 16px 12px; }
@@ -950,7 +952,7 @@ html.touch .sb-msg-actions button { min-height: 42px; }
   <button id="colsBtn" class="icon ghost" title="Cards per row" aria-label="Cards per row" hidden>▦</button>
   <button id="stationBtn" class="ghost station-btn" title="Log on at this station" aria-haspopup="menu"><span class="sb-dot" id="sbDot"></span><span class="sb-who" id="sbWho">Station</span></button>
   <button id="boardBtn" class="ghost" hidden title="Every station and who's at it; message a person or a station">Stations</button>
-  <button id="pedalBtn" class="icon ghost" title="Foot pedal setup" aria-label="Foot pedal setup">🦶</button>
+  <button id="pedalBtn" class="icon ghost" title="Foot pedal setup" aria-label="Foot pedal setup"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true" style="display:block;margin:auto"><circle cx="6" cy="2.6" r="1.6"/><circle cx="9.2" cy="2.4" r="1.1"/><circle cx="11.4" cy="3.2" r=".95"/><circle cx="13" cy="4.6" r=".8"/><path d="M4.5 6.2c2-1 6-.9 7.6.4 1 .8.6 2.2-.3 3-1 .9-1.2 1.9-1.3 3-.1 1.4-1 2.4-2.4 2.4S5.6 14 5.6 12.6c0-1.6-.7-2.4-1.3-3.6-.5-1-.6-2.2.2-2.8z"/></svg></button>
   <button id="fsBtn" class="icon ghost" title="Full screen" aria-label="Enter full screen">⛶</button>
   <button id="themeBtn" class="icon ghost" title="Toggle light / dark" aria-label="Toggle light / dark">◐</button>
   <button id="importProjBtn" class="ghost"
@@ -1245,7 +1247,7 @@ html.touch .sb-msg-actions button { min-height: 42px; }
 <dialog id="pedalDlg">
   <div class="dlg-body">
     <p class="dlg-title">Foot pedal</p>
-    <p class="dlg-sub">Left and right move between cultures. Middle reads the OD with the camera; press it again to save the reading.</p>
+    <p class="dlg-sub">Left and right move between cultures. Middle reads the OD with the camera; press it again to save the reading, or left to cancel it.</p>
     <div class="field"><label>Left</label><div id="pedalLeft"></div></div>
     <div class="field"><label>Middle</label><div id="pedalMiddle"></div></div>
     <div class="field"><label>Right</label><div id="pedalRight"></div></div>
@@ -3121,6 +3123,7 @@ const specRow = document.getElementById("specRow"), specResult = document.getEle
 const specStatus = document.getElementById("specStatus"), specThumb = document.getElementById("specThumb");
 let specLast = null;       // the slots of the last read in this dialog, to learn from on save
 let specFlagged = null;    // the OD box's text after a doubtful or failed read; the pedal won't save that
+let specCancel = false;    // the pedal cancelled mid-read: close once the read is over, so it can't land in the next dialog
 const camFrame = document.createElement("canvas");
 
 function showSpecRow() {
@@ -3165,11 +3168,11 @@ async function readSpectrophotometer() {
     const ok = agree && !unsure;
     specFlagged = ok ? null : odInput.value;
     specResult.classList.toggle("warn", !ok);
-    specStatus.textContent = (ok ? `Read ${pick.text} — check it against the screen, then ${pedal ? "press the middle pedal or Record" : "Record"}.`
+    specStatus.textContent = (ok ? `Read ${pick.text} — check it against the screen, then ${pedal ? "press the middle pedal to save, or left to cancel" : "Record"}.`
       : !agree ? `Got ${pick.text}, but the three looks didn't agree — was the number still changing? Check it.`
       : `Read ${pick.text}, but ${unsure === 1 ? "one digit is" : `${unsure} digits are`} a guess. Check it; saving teaches it the right digits.`)
       + (pick.r.negative ? " (Negative: below the blank.)" : "")
-      + (pedal && !ok ? " The middle pedal reads again." : "");
+      + (pedal && !ok ? " The middle pedal reads again; left cancels." : "");
   } catch (err) {
     specFlagged = odInput.value;
     specResult.classList.add("warn");
@@ -3177,6 +3180,7 @@ async function readSpectrophotometer() {
       : `Couldn't read the screen: ${err.message}. Is the box still around “Value = …”?`;
   } finally {
     btn.disabled = false; btn.textContent = "📷 Read from spectrophotometer";
+    if (specCancel) { specCancel = false; recordDlg.close(); }
   }
 }
 
@@ -5598,7 +5602,8 @@ document.addEventListener("keydown", e => {
    right move a highlighted "current" culture along the cards; middle opens
    Record OD on it and reads the camera, and a second press saves. The second
    press is the check against the instrument's screen that the button flow asks
-   for, so a doubtful read is read again, never saved, unless it's been corrected. */
+   for, so a doubtful read is read again, never saved, unless it's been corrected.
+   Left cancels a new reading; an edit of an old one is left alone. */
 const PEDAL_KEY = STORE_KEY + ".pedal";
 const PEDALS = ["left", "middle", "right"];
 const pedalDlg = document.getElementById("pedalDlg");
@@ -5612,6 +5617,14 @@ let pedal = (() => {
     return p && PEDALS.every(k => typeof p[k] === "string") ? p : null;
   } catch (e) { return null; }
 })();
+
+function syncPedalBtn() {
+  const btn = document.getElementById("pedalBtn");
+  btn.classList.toggle("on", !!pedal);
+  btn.title = pedal ? "Foot pedal on. Click to change its keys or turn it off" : "Foot pedal off. Click to set it up";
+  btn.setAttribute("aria-label", pedal ? "Foot pedal on: change setup" : "Foot pedal off: set up");
+}
+syncPedalBtn();
 
 function currentCulture() {
   return pedal ? byId(currentId) || cultures()[0] || null : null;
@@ -5635,6 +5648,12 @@ function pedalMove(step) {
   if (list.length) setCurrent(list[(list.indexOf(currentCulture()) + step + list.length) % list.length].id, true);
 }
 
+function pedalCancelRecord() {
+  if (editingId) return;
+  if (document.getElementById("specRead").disabled) specCancel = true;
+  else recordDlg.close();
+}
+
 function pedalRecord() {
   const c = currentCulture();
   if (!c) return;
@@ -5655,8 +5674,8 @@ const pedalName = sig => sig.replace(/\b(Key|Digit)(?=\w$)/, "");
 function wouldType(e) {
   const t = e.target;   // a keypress with nothing focused targets the document, which has no closest()
   if (!t || !t.closest || !t.closest('input:not([type="checkbox"], [type="radio"]), textarea, select, [contenteditable]')) return false;
-  if (e.key.length > 1) return /^(Arrow.*|Home|End|Backspace|Delete|Enter|Tab)$/.test(e.key);
   const numeric = t.type === "number" || t.inputMode === "decimal";
+  if (e.key.length > 1) return !(numeric && e.key.startsWith("Arrow")) && /^(Arrow.*|Home|End|Backspace|Delete|Enter|Tab)$/.test(e.key);
   return !numeric || /[\d.eE+-]/.test(e.key);
 }
 
@@ -5669,10 +5688,11 @@ document.addEventListener("keydown", e => {
   if (!which || wouldType(e)) return;
   e.preventDefault(); e.stopPropagation();
   if (e.repeat) return;     // a held pedal is one press
-  const dlg = document.querySelector("dialog[open]");
-  if ((dlg && dlg !== recordDlg) || !P() || view !== "cards") return;
+  // camera setup opens over Record OD, and comes after it in the page, so look past Record OD
+  if (document.querySelector("dialog[open]:not(#recordDlg)") || !P() || view !== "cards") return;
   if (which === "middle") pedalRecord();
-  else if (!dlg) pedalMove(which === "left" ? -1 : 1);
+  else if (!recordDlg.open) pedalMove(which === "left" ? -1 : 1);
+  else if (which === "left") pedalCancelRecord();
 }, true);
 
 // touching a card moves the highlight there, so the pedal carries on from it
@@ -5723,6 +5743,7 @@ document.getElementById("pedalSave").onclick = () => {
     else localStorage.removeItem(PEDAL_KEY);
   } catch (e) { /* this session only */ }
   pedalDlg.close();
+  syncPedalBtn();
   setCurrent(currentId);
 };
 
