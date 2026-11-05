@@ -162,6 +162,8 @@ main { padding: 20px; max-width: 1500px; margin: 0 auto; }
      narrow, and the @container rules at the end of this sheet compact it */
   container-type: inline-size;
 }
+/* the culture the foot pedal is on */
+.card.current { outline: 3px solid var(--series-1); outline-offset: 1px; }
 .card-head { padding: 14px 16px 12px; }
 .name-row { display: flex; align-items: center; gap: 8px; }
 input.name {
@@ -948,6 +950,7 @@ html.touch .sb-msg-actions button { min-height: 42px; }
   <button id="colsBtn" class="icon ghost" title="Cards per row" aria-label="Cards per row" hidden>▦</button>
   <button id="stationBtn" class="ghost station-btn" title="Log on at this station" aria-haspopup="menu"><span class="sb-dot" id="sbDot"></span><span class="sb-who" id="sbWho">Station</span></button>
   <button id="boardBtn" class="ghost" hidden title="Every station and who's at it; message a person or a station">Stations</button>
+  <button id="pedalBtn" class="icon ghost" title="Foot pedal setup" aria-label="Foot pedal setup">🦶</button>
   <button id="fsBtn" class="icon ghost" title="Full screen" aria-label="Enter full screen">⛶</button>
   <button id="themeBtn" class="icon ghost" title="Toggle light / dark" aria-label="Toggle light / dark">◐</button>
   <button id="importProjBtn" class="ghost"
@@ -1234,6 +1237,24 @@ html.touch .sb-msg-actions button { min-height: 42px; }
       <button type="button" class="ghost" id="camForget" title="Forget the digits learned from saved readings, and start again from the built-in ones" style="margin-right:auto">Reset learning</button>
       <button type="button" class="ghost" id="camCancel">Cancel</button>
       <button type="button" class="primary" id="camSave">Save</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- foot pedal: it is a keyboard to the computer, so the app learns which keys it sends -->
+<dialog id="pedalDlg">
+  <div class="dlg-body">
+    <p class="dlg-title">Foot pedal</p>
+    <p class="dlg-sub">Left and right move between cultures. Middle reads the OD with the camera; press it again to save the reading.</p>
+    <div class="field"><label>Left</label><div id="pedalLeft"></div></div>
+    <div class="field"><label>Middle</label><div id="pedalMiddle"></div></div>
+    <div class="field"><label>Right</label><div id="pedalRight"></div></div>
+    <div class="help" id="pedalPrompt" aria-live="polite"></div>
+    <div class="err" id="pedalErr"></div>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="pedalClear" style="margin-right:auto">Clear</button>
+      <button type="button" class="ghost" id="pedalCancel">Cancel</button>
+      <button type="button" class="primary" id="pedalSave">Save</button>
     </div>
   </div>
 </dialog>
@@ -2386,7 +2407,7 @@ function renderCard(id) {
 
 function buildCard(c) {
   const el = document.createElement("section");
-  el.className = "card";
+  el.className = c === currentCulture() ? "card current" : "card";
   el.dataset.card = c.id;
 
   const ms = elapsed(c);
@@ -3099,6 +3120,7 @@ const camMessage = err => err && err.name === "NotAllowedError" ? "The browser w
 const specRow = document.getElementById("specRow"), specResult = document.getElementById("specResult");
 const specStatus = document.getElementById("specStatus"), specThumb = document.getElementById("specThumb");
 let specLast = null;       // the slots of the last read in this dialog, to learn from on save
+let specFlagged = null;    // the OD box's text after a doubtful or failed read; the pedal won't save that
 const camFrame = document.createElement("canvas");
 
 function showSpecRow() {
@@ -3106,6 +3128,7 @@ function showSpecRow() {
   document.getElementById("specRead").textContent = cam.box ? "📷 Read from spectrophotometer" : "📷 Set up the spectrophotometer camera";
   specResult.hidden = true; specResult.classList.remove("warn");
   specLast = null;
+  specFlagged = null;
 }
 
 // the box's picture, small, beside the result
@@ -3140,12 +3163,15 @@ async function readSpectrophotometer() {
     specLast = pick.r.slots;
     if (!pick.text.includes("?")) { odInput.value = pick.text; odInput.dispatchEvent(new Event("input")); }
     const ok = agree && !unsure;
+    specFlagged = ok ? null : odInput.value;
     specResult.classList.toggle("warn", !ok);
-    specStatus.textContent = (ok ? `Read ${pick.text} — check it against the screen, then Record.`
+    specStatus.textContent = (ok ? `Read ${pick.text} — check it against the screen, then ${pedal ? "press the middle pedal or Record" : "Record"}.`
       : !agree ? `Got ${pick.text}, but the three looks didn't agree — was the number still changing? Check it.`
       : `Read ${pick.text}, but ${unsure === 1 ? "one digit is" : `${unsure} digits are`} a guess. Check it; saving teaches it the right digits.`)
-      + (pick.r.negative ? " (Negative: below the blank.)" : "");
+      + (pick.r.negative ? " (Negative: below the blank.)" : "")
+      + (pedal && !ok ? " The middle pedal reads again." : "");
   } catch (err) {
+    specFlagged = odInput.value;
     specResult.classList.add("warn");
     specStatus.textContent = err && err.name && err.name !== "Error" ? camMessage(err)
       : `Couldn't read the screen: ${err.message}. Is the box still around “Value = …”?`;
@@ -5565,6 +5591,140 @@ document.addEventListener("keydown", e => {
   e.preventDefault();
   toggleFullscreen();
 });
+
+/* ---------- foot pedal ----------
+   A USB foot pedal is a keyboard to the computer, and which keys it sends is
+   whatever it was programmed with, so each station learns them once. Left and
+   right move a highlighted "current" culture along the cards; middle opens
+   Record OD on it and reads the camera, and a second press saves. The second
+   press is the check against the instrument's screen that the button flow asks
+   for, so a doubtful read is read again, never saved, unless it's been corrected. */
+const PEDAL_KEY = STORE_KEY + ".pedal";
+const PEDALS = ["left", "middle", "right"];
+const pedalDlg = document.getElementById("pedalDlg");
+const pedalErr = document.getElementById("pedalErr"), pedalPrompt = document.getElementById("pedalPrompt");
+const pedalSlot = { left: document.getElementById("pedalLeft"), middle: document.getElementById("pedalMiddle"), right: document.getElementById("pedalRight") };
+let pedalDraft = {};
+let currentId = null;      // only ever a highlight, so it isn't saved
+let pedal = (() => {
+  try {
+    const p = JSON.parse(localStorage.getItem(PEDAL_KEY));
+    return p && PEDALS.every(k => typeof p[k] === "string") ? p : null;
+  } catch (e) { return null; }
+})();
+
+function currentCulture() {
+  return pedal ? byId(currentId) || cultures()[0] || null : null;
+}
+
+function setCurrent(id, scroll) {
+  currentId = id;
+  gridEl.querySelectorAll(".card.current").forEach(n => n.classList.remove("current"));
+  const c = currentCulture();
+  const el = c && gridEl.querySelector(`[data-card="${c.id}"]`);
+  if (!el) return;
+  el.classList.add("current");
+  if (!scroll) return;
+  // a card can be taller than the Pi's panel: its name, at the top, is what must show
+  el.style.scrollMarginTop = document.querySelector("header").offsetHeight + 8 + "px";
+  el.scrollIntoView({ block: "start" });
+}
+
+function pedalMove(step) {
+  const list = cultures();
+  if (list.length) setCurrent(list[(list.indexOf(currentCulture()) + step + list.length) % list.length].id, true);
+}
+
+function pedalRecord() {
+  const c = currentCulture();
+  if (!c) return;
+  if (!recordDlg.open) { openRecord(c); readSpectrophotometer(); return; }
+  if (editingId || document.getElementById("specRead").disabled) return;
+  const od = odInput.value;
+  if (od.trim() && od !== specFlagged) document.getElementById("recordForm").requestSubmit();
+  else readSpectrophotometer();
+}
+
+const pedalSig = e => [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Cmd", e.code || e.key]
+  .filter(Boolean).join("+");
+const pedalName = sig => sig.replace(/\b(Key|Digit)(?=\w$)/, "");
+
+/* A pedal that sends a letter can't be told from the keyboard, so where that
+   letter would land in a text box it stays a letter. A letter can't go in a
+   number box, though, which is what lets the middle pedal work in Record OD. */
+function wouldType(e) {
+  const t = e.target;   // a keypress with nothing focused targets the document, which has no closest()
+  if (!t || !t.closest || !t.closest('input:not([type="checkbox"], [type="radio"]), textarea, select, [contenteditable]')) return false;
+  if (e.key.length > 1) return /^(Arrow.*|Home|End|Backspace|Delete|Enter|Tab)$/.test(e.key);
+  const numeric = t.type === "number" || t.inputMode === "decimal";
+  return !numeric || /[\d.eE+-]/.test(e.key);
+}
+
+// capture, so a pedal programmed as F, say, doesn't reach the other shortcuts too
+document.addEventListener("keydown", e => {
+  if (pedalDlg.open) { learnPedal(e); return; }
+  if (!pedal) return;
+  const sig = pedalSig(e);
+  const which = PEDALS.find(k => pedal[k] === sig);
+  if (!which || wouldType(e)) return;
+  e.preventDefault(); e.stopPropagation();
+  if (e.repeat) return;     // a held pedal is one press
+  const dlg = document.querySelector("dialog[open]");
+  if ((dlg && dlg !== recordDlg) || !P() || view !== "cards") return;
+  if (which === "middle") pedalRecord();
+  else if (!dlg) pedalMove(which === "left" ? -1 : 1);
+}, true);
+
+// touching a card moves the highlight there, so the pedal carries on from it
+gridEl.addEventListener("pointerdown", e => {
+  const card = e.target.closest("[data-card]");
+  if (pedal && card) setCurrent(card.dataset.card);
+});
+
+/* ---------- foot pedal setup ---------- */
+function showPedalDraft() {
+  const next = PEDALS.find(k => !pedalDraft[k]);
+  for (const k of PEDALS) pedalSlot[k].textContent = pedalDraft[k] ? pedalName(pedalDraft[k]) : k === next ? "Press it now…" : "—";
+  const letters = PEDALS.some(k => /^(Shift\+)?(Key|Digit)/.test(pedalDraft[k] || ""));
+  pedalPrompt.textContent = next ? `Press the ${next} pedal.`
+    : letters ? "These pedals type letters or digits, so they do nothing while the cursor is in a text box."
+    : "All three learned.";
+  document.getElementById("pedalSave").disabled = !!next && Object.keys(pedalDraft).length > 0;
+  if (!next) document.getElementById("pedalSave").focus();
+}
+
+function learnPedal(e) {
+  const next = PEDALS.find(k => !pedalDraft[k]);
+  if (!next || e.key === "Escape" || ["Shift", "Control", "Alt", "Meta"].includes(e.key)) return;
+  e.preventDefault(); e.stopPropagation();
+  if (e.repeat) return;
+  const sig = pedalSig(e);
+  if (Object.values(pedalDraft).includes(sig)) {
+    pedalErr.textContent = `${pedalName(sig)} is already used. Each pedal needs its own key.`;
+    return;
+  }
+  pedalErr.textContent = "";
+  pedalDraft[next] = sig;
+  showPedalDraft();
+}
+
+document.getElementById("pedalBtn").onclick = () => {
+  pedalDraft = {};
+  pedalErr.textContent = "";
+  showPedalDraft();
+  pedalDlg.showModal();
+};
+document.getElementById("pedalClear").onclick = () => { pedalDraft = {}; pedalErr.textContent = ""; showPedalDraft(); };
+document.getElementById("pedalCancel").onclick = () => pedalDlg.close();
+document.getElementById("pedalSave").onclick = () => {
+  pedal = pedalDraft.right ? pedalDraft : null;    // saved with nothing learned turns it off
+  try {
+    if (pedal) localStorage.setItem(PEDAL_KEY, JSON.stringify(pedal));
+    else localStorage.removeItem(PEDAL_KEY);
+  } catch (e) { /* this session only */ }
+  pedalDlg.close();
+  setCurrent(currentId);
+};
 
 /* ---------- cards per row ---------- */
 /* "Auto" is the responsive auto-fill track, which gives one column on the Pi's

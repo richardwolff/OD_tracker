@@ -111,6 +111,23 @@ starts Chromium, so if OD Tracker is opened while another Chromium window is
 already up, set "WebRTC PipeWire camera support" to Disabled in `chrome://flags`
 as well. In the Mac app, macOS asks once.
 
+## Foot pedal
+
+A three-pedal USB foot switch (a PCsensor FootSwitch here) moves between cultures
+and records OD with your hands free:
+
+- **Left / right** move the blue outline to the previous or next culture.
+- **Middle** opens Record OD on that culture and reads the camera. Check the
+  number against the screen and press **middle** again to save it. A read that
+  failed or was flagged in red is read again rather than saved; correct it by
+  hand and the next press saves your number.
+
+Set it up once per station with **🦶** in the header: press left, middle and right
+when asked, then Save. The pedal is a keyboard to the computer, so the app just
+learns the keys it sends and needs no driver. Pedals that send letters do nothing
+(or type that letter) while the cursor is in a text box such as a culture's name;
+tap elsewhere first. Save with nothing learned to turn the pedal off.
+
 ## Station Board
 
 Lets people mark which stations they are at, see who is at every other
